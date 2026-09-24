@@ -1,2 +1,0 @@
-=== git === 
-Initialized empty Git repository in C:/Users/TULIO/Documents/delicias-da-re/.git/

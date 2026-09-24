@@ -8,3 +8,9 @@ out
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
+
+# arquivos locais de configuração/teste
+env-local.txt
+build-log.txt
+push-log.txt
+*.bat

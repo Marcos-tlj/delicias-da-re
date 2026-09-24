@@ -1,4 +1,0 @@
-NEXT_PUBLIC_SUPABASE_URL=https://vvkahrdtgwgvciecukmb.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_tHinv2npKfyFdcPF5ap7bg_uKVoU_Bz
-NEXT_PUBLIC_WHATSAPP=5514997630070
-NEXT_PUBLIC_PIX_KEY=
