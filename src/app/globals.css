@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+@theme {
+  --color-cream: #fbf5ec;
+  --color-cream-dark: #f1e4d2;
+  --color-cocoa: #4b2e20;
+  --color-cocoa-light: #7a5240;
+  --color-berry: #d2445e;
+  --color-berry-dark: #b23249;
+  --font-sans: var(--font-nunito), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+  background: var(--color-cream);
+}
+
+body {
+  background: var(--color-cream);
+  color: var(--color-cocoa);
+  overscroll-behavior-y: none;
+}
+
+/* Rolagem horizontal sem barra (chips de categoria) */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* Espaço para a barra inferior + área segura do iPhone */
+.pb-safe { padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem); }
+
+@keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pop { 0% { transform: scale(.96); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+.animate-sheet-up { animation: sheet-up .28s cubic-bezier(.2,.8,.2,1); }
+.animate-fade-in { animation: fade-in .2s ease-out; }
+.animate-pop { animation: pop .25s ease-out; }
+
+@layer base {
+  input, select, textarea { font-size: 16px; } /* evita zoom automático no iOS */
+}
