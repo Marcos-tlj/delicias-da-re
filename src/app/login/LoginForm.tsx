@@ -2,140 +2,157 @@
 
 import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
+import { Cake, Lock } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { safeNext } from "@/lib/format";
+import { Button, ErrorNote, Field, Input, Segmented } from "@/components/ui";
+
+function friendly(msg: string) {
+  const m = msg.toLowerCase();
+  if (m.includes("database error") || m.includes("email_nao_autorizado") || m.includes("saving new user"))
+    return "Este e-mail não está autorizado. Peça para quem já tem acesso liberar em Configurações.";
+  if (m.includes("invalid login")) return "E-mail ou senha incorretos.";
+  if (m.includes("already registered") || m.includes("already been registered")) return "Esse e-mail já tem conta. Use “Entrar”.";
+  if (m.includes("password")) return "A senha precisa ter pelo menos 8 caracteres.";
+  if (m.includes("email not confirmed")) return "E-mail ainda não confirmado.";
+  return "Não foi possível entrar. Tente novamente.";
+}
 
 export default function LoginForm() {
-  const params = useSearchParams();
   const router = useRouter();
-  const next = safeNext(params.get("next"));
+  const params = useSearchParams();
+  const [mode, setMode] = useState<"entrar" | "criar">("entrar");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
-  const [step, setStep] = useState<"email" | "code">("email");
+  const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(params.get("erro") ? "Não foi possível entrar. Tente de novo." : "");
+  const [error, setError] = useState(
+    params.get("erro") === "acesso" ? "Sua conta não tem acesso a este sistema." : "",
+  );
 
-  const supabase = createClient();
-  const callbackUrl = () => `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`;
-
-  const google = async () => {
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
     setLoading(true);
     setError("");
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: callbackUrl() },
-    });
-    if (error) {
-      setError("Login com Google indisponível no momento.");
+    const supabase = createClient();
+
+    if (params.get("erro") === "acesso") await supabase.auth.signOut();
+
+    const res =
+      mode === "entrar"
+        ? await supabase.auth.signInWithPassword({ email: email.trim(), password })
+        : await supabase.auth.signUp({
+            email: email.trim(),
+            password,
+            options: { data: { full_name: name.trim() } },
+          });
+
+    if (res.error) {
+      setError(friendly(res.error.message));
       setLoading(false);
+      return;
     }
-  };
-
-  const sendEmail = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: callbackUrl(), shouldCreateUser: true },
-    });
-    setLoading(false);
-    if (error) setError("Não conseguimos enviar o e-mail. Confira o endereço e tente de novo.");
-    else setStep("code");
-  };
-
-  const verifyCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setError("");
-    const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: code.trim(), type: "email" });
-    setLoading(false);
-    if (error) setError("Código inválido ou expirado.");
-    else {
-      router.replace(next);
-      router.refresh();
+    if (mode === "criar" && !res.data.session) {
+      setError("Conta criada, mas o Supabase pediu confirmação por e-mail. Desative “Confirm email” no painel.");
+      setLoading(false);
+      return;
     }
+    router.replace("/");
+    router.refresh();
   };
 
   return (
-    <div className="flex min-h-dvh flex-col px-6 pt-[calc(env(safe-area-inset-top)+2rem)] pb-8">
-      <Link href="/" className="text-sm font-semibold text-cocoa-light">
-        ‹ Voltar ao cardápio
-      </Link>
-      <div className="mt-10 text-center">
-        <span className="text-6xl">🎂</span>
-        <h1 className="font-display mt-3 text-3xl font-semibold">Delícias da Rê</h1>
-        <p className="mt-2 text-cocoa-light">Entre para fazer e acompanhar seus pedidos.</p>
+    <div className="grid min-h-dvh lg:grid-cols-2">
+      {/* Lado decorativo (computador) */}
+      <div className="relative hidden overflow-hidden bg-cocoa lg:block">
+        <div className="absolute -top-24 -left-24 h-96 w-96 rounded-full bg-brand/30 blur-3xl" />
+        <div className="absolute -right-10 bottom-0 h-80 w-80 rounded-full bg-amber-400/15 blur-3xl" />
+        <div className="relative flex h-full flex-col justify-between p-12 text-white">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand">
+              <Cake className="h-5 w-5" />
+            </span>
+            <span className="font-display text-xl font-semibold">Delícias da Rê</span>
+          </div>
+          <div>
+            <p className="font-display text-4xl leading-tight font-semibold">
+              Pedidos, clientes e estoque
+              <br />
+              num só lugar.
+            </p>
+            <p className="mt-4 max-w-md text-white/60">
+              Agenda de entregas, bolos prontos disponíveis, sabores e valores sempre atualizados, no computador e no
+              celular.
+            </p>
+          </div>
+          <p className="text-sm text-white/40">Acesso restrito à equipe.</p>
+        </div>
       </div>
 
-      {error && <p className="mt-6 rounded-2xl bg-red-50 p-3 text-center text-sm text-red-700">{error}</p>}
-
-      {step === "email" ? (
-        <div className="mt-8 space-y-4">
-          <button
-            onClick={google}
-            disabled={loading}
-            className="flex w-full items-center justify-center gap-3 rounded-2xl border border-cream-dark bg-white py-3.5 font-bold disabled:opacity-60"
-          >
-            <svg viewBox="0 0 48 48" className="h-5 w-5" aria-hidden>
-              <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z" />
-              <path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z" />
-              <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z" />
-              <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z" />
-            </svg>
-            Continuar com Google
-          </button>
-
-          <div className="flex items-center gap-3 text-xs text-cocoa-light">
-            <span className="h-px flex-1 bg-cream-dark" /> ou com e-mail <span className="h-px flex-1 bg-cream-dark" />
+      {/* Formulário */}
+      <div className="flex items-center justify-center px-5 py-10">
+        <div className="w-full max-w-sm">
+          <div className="mb-8 flex flex-col items-center text-center lg:hidden">
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand text-white">
+              <Cake className="h-6 w-6" />
+            </span>
+            <p className="font-display mt-3 text-2xl font-semibold">Delícias da Rê</p>
+            <p className="text-sm text-ink-3">Gestão de pedidos</p>
           </div>
 
-          <form onSubmit={sendEmail} className="space-y-3">
-            <input
-              type="email"
-              required
-              autoComplete="email"
-              inputMode="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="seu@email.com"
-              className="w-full rounded-2xl border border-cream-dark bg-white px-4 py-3.5 outline-none focus:border-cocoa"
-            />
-            <button
-              disabled={loading}
-              className="w-full rounded-2xl bg-cocoa py-3.5 font-bold text-cream disabled:opacity-60"
-            >
-              {loading ? "Enviando…" : "Receber link de acesso"}
-            </button>
+          <h1 className="text-xl font-bold">{mode === "entrar" ? "Entrar" : "Primeiro acesso"}</h1>
+          <p className="mt-1 text-sm text-ink-3">
+            {mode === "entrar"
+              ? "Use o e-mail e a senha cadastrados."
+              : "Crie sua senha. Só funciona para e-mails liberados."}
+          </p>
+
+          <Segmented
+            className="mt-5"
+            value={mode}
+            onChange={(v) => {
+              setMode(v);
+              setError("");
+            }}
+            options={[
+              { value: "entrar", label: "Entrar" },
+              { value: "criar", label: "Primeiro acesso" },
+            ]}
+          />
+
+          <form onSubmit={submit} className="mt-5 space-y-4">
+            {mode === "criar" && (
+              <Field label="Seu nome">
+                <Input value={name} onChange={(e) => setName(e.target.value)} required autoComplete="name" />
+              </Field>
+            )}
+            <Field label="E-mail">
+              <Input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </Field>
+            <Field label="Senha" hint={mode === "criar" ? "Mínimo de 8 caracteres." : undefined}>
+              <Input
+                type="password"
+                autoComplete={mode === "entrar" ? "current-password" : "new-password"}
+                minLength={mode === "criar" ? 8 : undefined}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </Field>
+            <ErrorNote>{error}</ErrorNote>
+            <Button variant="dark" size="lg" className="w-full" disabled={loading}>
+              <Lock className="h-4 w-4" />
+              {loading ? "Aguarde…" : mode === "entrar" ? "Entrar" : "Criar acesso"}
+            </Button>
           </form>
         </div>
-      ) : (
-        <form onSubmit={verifyCode} className="mt-8 space-y-3">
-          <p className="rounded-2xl bg-white p-4 text-center text-sm">
-            Enviamos um e-mail para <b>{email}</b>.<br />
-            Toque no link do e-mail <b>ou</b> digite o código abaixo.
-          </p>
-          <input
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={10}
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-            placeholder="Código do e-mail"
-            className="w-full rounded-2xl border border-cream-dark bg-white px-4 py-3.5 text-center text-2xl tracking-[0.4em] outline-none focus:border-cocoa"
-          />
-          <button
-            disabled={loading || code.length < 6}
-            className="w-full rounded-2xl bg-berry py-3.5 font-bold text-white disabled:opacity-50"
-          >
-            {loading ? "Verificando…" : "Entrar"}
-          </button>
-          <button type="button" onClick={() => setStep("email")} className="w-full py-2 text-sm font-semibold text-cocoa-light">
-            Usar outro e-mail
-          </button>
-        </form>
-      )}
+      </div>
     </div>
   );
 }

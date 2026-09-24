@@ -1,55 +1,78 @@
 -- =====================================================================
---  DELÍCIAS DA RÊ — Schema completo do Supabase
---  Como usar: Supabase > SQL Editor > New query > cole TUDO > Run.
---  Pode rodar de novo se der erro: a seção 0 limpa antes de recriar.
+--  DELÍCIAS DA RÊ — Plataforma interna de pedidos (v2)
+--  Supabase > SQL Editor > cole tudo > Run.
+--  ATENÇÃO: a seção 0 apaga as tabelas do app e recria do zero.
 -- =====================================================================
 
 create extension if not exists pgcrypto;
 
 -- ---------------------------------------------------------------------
--- 0. LIMPEZA (permite rodar o script de novo se algo falhou antes)
---    ATENÇÃO: apaga as tabelas do app. Use só durante a configuração.
+-- 0. LIMPEZA (versão 1 e reexecuções)
 -- ---------------------------------------------------------------------
 drop trigger if exists on_auth_user_created on auth.users;
-drop policy if exists "product-images: admin envia"    on storage.objects;
-drop policy if exists "product-images: admin atualiza" on storage.objects;
-drop policy if exists "product-images: admin exclui"   on storage.objects;
+drop trigger if exists before_auth_user_created on auth.users;
 drop table if exists public.order_items cascade;
 drop table if exists public.orders cascade;
 drop table if exists public.products cascade;
+drop table if exists public.option_items cascade;
+drop table if exists public.option_lists cascade;
+drop table if exists public.customers cascade;
 drop table if exists public.profiles cascade;
+drop table if exists public.allowed_emails cascade;
 drop type if exists public.order_status cascade;
-drop function if exists public.place_order(jsonb, text, text, text, text, jsonb, text, timestamptz);
+drop function if exists public.place_order(jsonb, text, text, text, text, jsonb, text, timestamptz) cascade;
+drop function if exists public.save_order(jsonb, jsonb) cascade;
 drop function if exists public.is_admin() cascade;
 drop function if exists public.handle_new_user() cascade;
+drop function if exists public.check_signup_allowed() cascade;
 drop function if exists public.touch_updated_at() cascade;
-
+drop function if exists public.order_items_stock_insert() cascade;
+drop function if exists public.order_items_stock_delete() cascade;
+drop function if exists public.orders_stock_before_delete() cascade;
+drop function if exists public.orders_stock_status_change() cascade;
 
 -- ---------------------------------------------------------------------
--- 1. PROFILES (um por usuário do auth; guarda a flag de admin)
+-- 1. ACESSO: só e-mails autorizados conseguem criar conta
 -- ---------------------------------------------------------------------
+create table public.allowed_emails (
+  email       text primary key check (email = lower(btrim(email)) and email like '%@%'),
+  created_at  timestamptz not null default now()
+);
+
+insert into public.allowed_emails (email) values ('lopestmarcos@gmail.com');
+
 create table public.profiles (
   id          uuid primary key references auth.users (id) on delete cascade,
   full_name   text,
-  phone       text,
   email       text,
   is_admin    boolean not null default false,
   created_at  timestamptz not null default now()
 );
 
--- Cria o profile automaticamente quando alguém faz o primeiro login
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer
-set search_path = ''
-as $$
+-- Bloqueia o cadastro de qualquer e-mail fora da lista
+create or replace function public.check_signup_allowed()
+returns trigger language plpgsql security definer set search_path = '' as $$
 begin
-  insert into public.profiles (id, full_name, email)
+  if not exists (select 1 from public.allowed_emails a where a.email = lower(new.email)) then
+    raise exception 'EMAIL_NAO_AUTORIZADO';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger before_auth_user_created
+  before insert on auth.users
+  for each row execute function public.check_signup_allowed();
+
+create or replace function public.handle_new_user()
+returns trigger language plpgsql security definer set search_path = '' as $$
+begin
+  insert into public.profiles (id, full_name, email, is_admin)
   values (
     new.id,
     coalesce(new.raw_user_meta_data ->> 'full_name', new.raw_user_meta_data ->> 'name'),
-    new.email
+    lower(new.email),
+    true
   )
   on conflict (id) do nothing;
   return new;
@@ -60,97 +83,24 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- Cria profile para quem já tinha feito login antes deste script
-insert into public.profiles (id, full_name, email)
-select id, coalesce(raw_user_meta_data ->> 'full_name', raw_user_meta_data ->> 'name'), email
-from auth.users
+-- Usuários que já existiam
+insert into public.profiles (id, full_name, email, is_admin)
+select u.id, coalesce(u.raw_user_meta_data ->> 'full_name', u.raw_user_meta_data ->> 'name'), lower(u.email),
+       exists (select 1 from public.allowed_emails a where a.email = lower(u.email))
+from auth.users u
 on conflict (id) do nothing;
 
--- Helper usado pelas políticas. SECURITY DEFINER evita recursão de RLS.
+-- Tem acesso = profile admin E e-mail ainda autorizado (remover o e-mail corta o acesso na hora)
 create or replace function public.is_admin()
-returns boolean
-language sql
-stable
-security definer
-set search_path = ''
-as $$
-  select coalesce(
-    (select p.is_admin from public.profiles p where p.id = auth.uid()),
-    false
+returns boolean language sql stable security definer set search_path = '' as $$
+  select exists (
+    select 1
+    from public.profiles p
+    join public.allowed_emails a on a.email = lower(p.email)
+    where p.id = auth.uid() and p.is_admin
   );
 $$;
 
--- ---------------------------------------------------------------------
--- 2. PRODUCTS
--- ---------------------------------------------------------------------
-create table public.products (
-  id             uuid primary key default gen_random_uuid(),
-  name           text not null check (char_length(name) between 2 and 80),
-  description    text check (char_length(description) <= 400),
-  category       text not null check (category in ('bolos', 'doces', 'tortas')),
-  price          numeric(10,2) not null check (price >= 0),
-  unit           text not null default 'un' check (unit in ('un', 'kg')),
-  min_quantity   numeric(6,2) not null default 1 check (min_quantity > 0),
-  quantity_step  numeric(6,2) not null default 1 check (quantity_step > 0),
-  price_is_from  boolean not null default false,   -- exibe "a partir de"
-  -- Grupos de opções. Ex.:
-  -- [{"name":"Massa","type":"single","required":true,"choices":["Branca","Chocolate"]}]
-  options        jsonb not null default '[]'::jsonb check (jsonb_typeof(options) = 'array'),
-  image_url      text,
-  is_available   boolean not null default true,
-  sort_order     int not null default 0,
-  created_at     timestamptz not null default now(),
-  updated_at     timestamptz not null default now()
-);
-
-create index products_category_idx on public.products (category, sort_order);
-
--- ---------------------------------------------------------------------
--- 3. ORDERS + ORDER_ITEMS
--- ---------------------------------------------------------------------
-create type public.order_status as enum
-  ('pendente', 'aceito', 'em_preparo', 'saiu_entrega', 'finalizado', 'cancelado');
-
-create table public.orders (
-  id              uuid primary key default gen_random_uuid(),
-  code            bigint generated always as identity,          -- nº curto p/ exibir (#12)
-  user_id         uuid not null references auth.users (id) on delete cascade,
-  status          public.order_status not null default 'pendente',
-  delivery_type   text not null check (delivery_type in ('retirada', 'delivery')),
-  address         jsonb,
-  payment_method  text not null check (payment_method in ('pix', 'cartao_entrega')),
-  customer_name   text not null,
-  customer_phone  text not null,
-  notes           text,
-  scheduled_for   timestamptz,                                   -- "para quando?"
-  subtotal        numeric(10,2) not null check (subtotal >= 0),
-  delivery_fee    numeric(10,2) not null default 0 check (delivery_fee >= 0),
-  total           numeric(10,2) not null check (total >= 0),
-  created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now(),
-  constraint address_required_for_delivery
-    check (delivery_type = 'retirada' or address is not null)
-);
-
-create index orders_user_idx    on public.orders (user_id, created_at desc);
-create index orders_created_idx on public.orders (created_at desc);
-
-create table public.order_items (
-  id            bigint generated always as identity primary key,
-  order_id      uuid not null references public.orders (id) on delete cascade,
-  product_id    uuid references public.products (id) on delete set null,
-  product_name  text not null,          -- "foto" do produto no momento da compra
-  unit          text not null,
-  unit_price    numeric(10,2) not null,
-  quantity      numeric(8,2) not null check (quantity > 0),
-  options       jsonb not null default '{}'::jsonb,
-  note          text,
-  line_total    numeric(10,2) not null
-);
-
-create index order_items_order_idx on public.order_items (order_id);
-
--- updated_at automático
 create or replace function public.touch_updated_at()
 returns trigger language plpgsql set search_path = '' as $$
 begin
@@ -159,323 +109,405 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------
+-- 2. CLIENTES
+-- ---------------------------------------------------------------------
+create table public.customers (
+  id            uuid primary key default gen_random_uuid(),
+  name          text not null check (char_length(btrim(name)) between 1 and 120),
+  phone         text,
+  email         text,
+  address       text,
+  neighborhood  text,
+  notes         text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+create index customers_name_idx on public.customers (lower(name));
+create index customers_phone_idx on public.customers (phone);
+create trigger customers_touch before update on public.customers
+  for each row execute function public.touch_updated_at();
+
+-- ---------------------------------------------------------------------
+-- 3. SABORES E OPÇÕES (listas reutilizáveis: massas, recheios, coberturas…)
+-- ---------------------------------------------------------------------
+create table public.option_lists (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null unique check (char_length(btrim(name)) between 1 and 60),
+  sort_order  int not null default 0,
+  created_at  timestamptz not null default now()
+);
+
+create table public.option_items (
+  id          uuid primary key default gen_random_uuid(),
+  list_id     uuid not null references public.option_lists (id) on delete cascade,
+  name        text not null check (char_length(btrim(name)) between 1 and 80),
+  is_active   boolean not null default true,
+  sort_order  int not null default 0,
+  created_at  timestamptz not null default now(),
+  unique (list_id, name)
+);
+create index option_items_list_idx on public.option_items (list_id, sort_order);
+
+-- ---------------------------------------------------------------------
+-- 4. PRODUTOS + ESTOQUE
+-- ---------------------------------------------------------------------
+create table public.products (
+  id             uuid primary key default gen_random_uuid(),
+  name           text not null check (char_length(btrim(name)) between 1 and 80),
+  category       text not null default 'bolos' check (category in ('bolos', 'doces', 'tortas', 'outros')),
+  description    text,
+  price          numeric(10,2) not null default 0 check (price >= 0),
+  unit           text not null default 'un' check (unit in ('un', 'kg')),
+  price_is_from  boolean not null default false,
+  -- [{"label":"Recheio","list_id":"…","required":true,"multi":false}]
+  option_groups  jsonb not null default '[]'::jsonb check (jsonb_typeof(option_groups) = 'array'),
+  is_active      boolean not null default true,
+  stock_enabled  boolean not null default false,   -- controla "prontos para venda"
+  stock_qty      numeric(8,2) not null default 0 check (stock_qty >= 0),
+  stock_min      numeric(8,2) not null default 0 check (stock_min >= 0),
+  sort_order     int not null default 0,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+create index products_category_idx on public.products (category, sort_order);
 create trigger products_touch before update on public.products
   for each row execute function public.touch_updated_at();
+
+-- ---------------------------------------------------------------------
+-- 5. PEDIDOS
+-- ---------------------------------------------------------------------
+create type public.order_status as enum
+  ('novo', 'confirmado', 'em_preparo', 'pronto', 'entregue', 'cancelado');
+
+create table public.orders (
+  id              uuid primary key default gen_random_uuid(),
+  code            bigint generated always as identity,
+  customer_id     uuid references public.customers (id) on delete set null,
+  customer_name   text not null,
+  customer_phone  text,
+  status          public.order_status not null default 'novo',
+  delivery_type   text not null default 'retirada' check (delivery_type in ('retirada', 'entrega')),
+  address         text,
+  due_at          timestamptz,                         -- data/hora de entrega ou retirada
+  payment_method  text check (payment_method in ('pix', 'cartao', 'dinheiro', 'outro')),
+  amount_paid     numeric(10,2) not null default 0 check (amount_paid >= 0),
+  subtotal        numeric(10,2) not null default 0 check (subtotal >= 0),
+  delivery_fee    numeric(10,2) not null default 0 check (delivery_fee >= 0),
+  discount        numeric(10,2) not null default 0 check (discount >= 0),
+  total           numeric(10,2) not null default 0 check (total >= 0),
+  payment_status  text generated always as (
+                    case when amount_paid >= total then 'pago'
+                         when amount_paid > 0 then 'parcial'
+                         else 'pendente' end
+                  ) stored,
+  notes           text,
+  created_by      uuid default auth.uid() references auth.users (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+create index orders_due_idx      on public.orders (due_at);
+create index orders_status_idx   on public.orders (status);
+create index orders_customer_idx on public.orders (customer_id, created_at desc);
 create trigger orders_touch before update on public.orders
   for each row execute function public.touch_updated_at();
 
--- ---------------------------------------------------------------------
--- 4. ROW LEVEL SECURITY
--- ---------------------------------------------------------------------
-alter table public.profiles    enable row level security;
-alter table public.products    enable row level security;
-alter table public.orders      enable row level security;
-alter table public.order_items enable row level security;
-
--- PROFILES: cada um vê/edita o seu; admin vê todos
-create policy "profiles: ler o próprio ou admin"
-  on public.profiles for select to authenticated
-  using (id = auth.uid() or public.is_admin());
-
-create policy "profiles: editar o próprio"
-  on public.profiles for update to authenticated
-  using (id = auth.uid()) with check (id = auth.uid());
-
--- Ninguém consegue se promover a admin pela API: só pode editar nome e telefone.
-revoke insert, update, delete on public.profiles from anon, authenticated;
-grant update (full_name, phone) on public.profiles to authenticated;
-
--- PRODUCTS: qualquer pessoa vê os disponíveis; admin vê e gerencia tudo
-create policy "products: ler disponíveis"
-  on public.products for select to anon, authenticated
-  using (is_available or public.is_admin());
-
-create policy "products: admin insere"
-  on public.products for insert to authenticated
-  with check (public.is_admin());
-
-create policy "products: admin edita"
-  on public.products for update to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
-create policy "products: admin exclui"
-  on public.products for delete to authenticated
-  using (public.is_admin());
-
--- ORDERS: cliente só lê os PRÓPRIOS pedidos; admin lê todos.
-create policy "orders: dono ou admin lê"
-  on public.orders for select to authenticated
-  using (user_id = auth.uid() or public.is_admin());
-
--- Só admin altera (status). Cliente não tem política de UPDATE => bloqueado.
-create policy "orders: só admin altera"
-  on public.orders for update to authenticated
-  using (public.is_admin()) with check (public.is_admin());
-
--- Não existe política de INSERT/DELETE: pedidos só nascem pela função
--- place_order() (que recalcula os preços no servidor).
-revoke all on public.orders      from anon;
-revoke all on public.order_items from anon;
-revoke insert, update, delete on public.orders      from authenticated;
-revoke insert, update, delete on public.order_items from authenticated;
-grant update (status) on public.orders to authenticated;   -- RLS restringe a admins
-
--- ORDER_ITEMS: visível para o dono do pedido ou admin
-create policy "order_items: dono ou admin lê"
-  on public.order_items for select to authenticated
-  using (
-    public.is_admin()
-    or exists (
-      select 1 from public.orders o
-      where o.id = order_items.order_id and o.user_id = auth.uid()
-    )
-  );
+create table public.order_items (
+  id            bigint generated always as identity primary key,
+  order_id      uuid not null references public.orders (id) on delete cascade,
+  product_id    uuid references public.products (id) on delete set null,
+  product_name  text not null,
+  unit          text not null default 'un',
+  unit_price    numeric(10,2) not null check (unit_price >= 0),
+  quantity      numeric(8,2) not null check (quantity > 0),
+  options       jsonb not null default '{}'::jsonb,
+  note          text,
+  line_total    numeric(10,2) not null,
+  from_stock    boolean not null default false,   -- baixou do estoque?
+  sort_order    int not null default 0
+);
+create index order_items_order_idx on public.order_items (order_id);
 
 -- ---------------------------------------------------------------------
--- 5. FUNÇÃO SEGURA PARA CRIAR PEDIDO
---    O cliente manda apenas: id do produto, quantidade e opções.
---    Preço, disponibilidade e total são calculados AQUI, no banco.
+-- 6. ESTOQUE AUTOMÁTICO
+--    Item de pedido (não cancelado) de produto com estoque => dá baixa.
+--    Cancelar / excluir / editar o pedido => devolve ao estoque.
 -- ---------------------------------------------------------------------
-create or replace function public.place_order(
-  p_items           jsonb,
-  p_delivery_type   text,
-  p_payment_method  text,
-  p_customer_name   text,
-  p_customer_phone  text,
-  p_address         jsonb default null,
-  p_notes           text default null,
-  p_scheduled_for   timestamptz default null
-)
-returns uuid
-language plpgsql
-security definer
-set search_path = ''
-as $$
+create or replace function public.order_items_stock_insert()
+returns trigger language plpgsql set search_path = '' as $$
 declare
-  v_uid       uuid := auth.uid();
-  v_order_id  uuid;
-  v_item      jsonb;
-  v_product   public.products%rowtype;
-  v_qty       numeric;
-  v_sel       jsonb;
-  v_clean     jsonb;
-  v_group     jsonb;
-  v_gname     text;
-  v_rows      jsonb := '[]'::jsonb;
-  v_subtotal  numeric := 0;
-  v_line      numeric;
+  v_status public.order_status;
+  v_prod   record;
 begin
-  if v_uid is null then
-    raise exception 'Faça login para enviar o pedido.';
-  end if;
-
-  -- anti-spam simples
-  if (select count(*) from public.orders
-      where user_id = v_uid and created_at > now() - interval '10 minutes') >= 3 then
-    raise exception 'Muitos pedidos em sequência. Aguarde alguns minutos.';
-  end if;
-
-  if p_items is null or jsonb_typeof(p_items) <> 'array'
-     or jsonb_array_length(p_items) = 0 then
-    raise exception 'Sua sacola está vazia.';
-  end if;
-  if jsonb_array_length(p_items) > 30 then
-    raise exception 'Pedido com itens demais.';
-  end if;
-
-  if p_delivery_type not in ('retirada', 'delivery') then
-    raise exception 'Tipo de entrega inválido.';
-  end if;
-  if p_payment_method not in ('pix', 'cartao_entrega') then
-    raise exception 'Forma de pagamento inválida.';
-  end if;
-  if coalesce(btrim(p_customer_name), '') = '' then
-    raise exception 'Informe seu nome.';
-  end if;
-  if length(regexp_replace(coalesce(p_customer_phone, ''), '\D', '', 'g')) < 10 then
-    raise exception 'Informe um telefone/WhatsApp válido com DDD.';
-  end if;
-  if p_delivery_type = 'delivery' and (
-       p_address is null
-       or coalesce(btrim(p_address ->> 'street'), '') = ''
-       or coalesce(btrim(p_address ->> 'number'), '') = ''
-       or coalesce(btrim(p_address ->> 'neighborhood'), '') = ''
-     ) then
-    raise exception 'Preencha rua, número e bairro para entrega.';
-  end if;
-  if p_scheduled_for is not null and p_scheduled_for < now() - interval '5 minutes' then
-    raise exception 'A data desejada já passou.';
-  end if;
-
-  for v_item in select * from jsonb_array_elements(p_items)
-  loop
-    select * into v_product
-    from public.products
-    where id = (v_item ->> 'product_id')::uuid;
-
-    if not found or not v_product.is_available then
-      raise exception 'Um produto da sacola não está mais disponível.';
-    end if;
-
-    v_qty := (v_item ->> 'quantity')::numeric;
-    if v_qty is null or v_qty < v_product.min_quantity or v_qty > 100
-       or (v_qty / v_product.quantity_step) <> trunc(v_qty / v_product.quantity_step) then
-      raise exception 'Quantidade inválida para %.', v_product.name;
-    end if;
-
-    -- valida opções contra as cadastradas no produto
-    v_sel   := coalesce(v_item -> 'options', '{}'::jsonb);
-    v_clean := '{}'::jsonb;
-    if jsonb_typeof(v_sel) <> 'object' then
-      raise exception 'Opções inválidas para %.', v_product.name;
-    end if;
-
-    for v_group in select * from jsonb_array_elements(v_product.options)
-    loop
-      v_gname := v_group ->> 'name';
-
-      if coalesce((v_group ->> 'required')::boolean, false)
-         and (v_sel -> v_gname is null
-              or v_sel ->> v_gname = ''
-              or v_sel -> v_gname = '[]'::jsonb) then
-        raise exception 'Escolha "%" para %.', v_gname, v_product.name;
+  select status into v_status from public.orders where id = new.order_id;
+  if v_status is distinct from 'cancelado' and new.product_id is not null then
+    select name, stock_enabled, stock_qty into v_prod
+      from public.products where id = new.product_id for update;
+    if found and v_prod.stock_enabled then
+      if v_prod.stock_qty < new.quantity then
+        raise exception 'Estoque insuficiente de "%": restam %.', v_prod.name, v_prod.stock_qty;
       end if;
-
-      if v_sel ? v_gname then
-        if v_group ->> 'type' = 'multi' then
-          if jsonb_typeof(v_sel -> v_gname) <> 'array' or exists (
-               select 1 from jsonb_array_elements_text(v_sel -> v_gname) e
-               where not ((v_group -> 'choices') ? e)
-             ) then
-            raise exception 'Opção inválida em "%".', v_gname;
-          end if;
-        else
-          if jsonb_typeof(v_sel -> v_gname) <> 'string'
-             or not ((v_group -> 'choices') ? (v_sel ->> v_gname)) then
-            raise exception 'Opção inválida em "%".', v_gname;
-          end if;
-        end if;
-        v_clean := v_clean || jsonb_build_object(v_gname, v_sel -> v_gname);
-      end if;
-    end loop;
-
-    v_line     := round(v_product.price * v_qty, 2);
-    v_subtotal := v_subtotal + v_line;
-
-    v_rows := v_rows || jsonb_build_object(
-      'product_id',   v_product.id,
-      'product_name', v_product.name,
-      'unit',         v_product.unit,
-      'unit_price',   v_product.price,
-      'quantity',     v_qty,
-      'options',      v_clean,
-      'note',         left(nullif(btrim(v_item ->> 'note'), ''), 200),
-      'line_total',   v_line
-    );
-  end loop;
-
-  insert into public.orders (
-    user_id, delivery_type, address, payment_method,
-    customer_name, customer_phone, notes, scheduled_for,
-    subtotal, delivery_fee, total
-  ) values (
-    v_uid,
-    p_delivery_type,
-    case when p_delivery_type = 'delivery' then p_address end,
-    p_payment_method,
-    left(btrim(p_customer_name), 80),
-    left(btrim(p_customer_phone), 20),
-    left(nullif(btrim(p_notes), ''), 500),
-    p_scheduled_for,
-    v_subtotal, 0, v_subtotal
-  )
-  returning id into v_order_id;
-
-  insert into public.order_items
-    (order_id, product_id, product_name, unit, unit_price, quantity, options, note, line_total)
-  select v_order_id, r.product_id, r.product_name, r.unit, r.unit_price,
-         r.quantity, r.options, r.note, r.line_total
-  from jsonb_to_recordset(v_rows) as r(
-    product_id uuid, product_name text, unit text, unit_price numeric,
-    quantity numeric, options jsonb, note text, line_total numeric
-  );
-
-  return v_order_id;
+      update public.products set stock_qty = stock_qty - new.quantity where id = new.product_id;
+      new.from_stock := true;
+    end if;
+  end if;
+  return new;
 end;
 $$;
 
-revoke all on function public.place_order(jsonb, text, text, text, text, jsonb, text, timestamptz) from public, anon;
-grant execute on function public.place_order(jsonb, text, text, text, text, jsonb, text, timestamptz) to authenticated;
+create trigger order_items_stock_ins before insert on public.order_items
+  for each row execute function public.order_items_stock_insert();
+
+create or replace function public.order_items_stock_delete()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  -- Se o pedido inteiro está sendo excluído, o trigger do pedido já devolveu.
+  if old.from_stock and old.product_id is not null
+     and exists (select 1 from public.orders where id = old.order_id) then
+    update public.products set stock_qty = stock_qty + old.quantity where id = old.product_id;
+  end if;
+  return old;
+end;
+$$;
+
+create trigger order_items_stock_del after delete on public.order_items
+  for each row execute function public.order_items_stock_delete();
+
+create or replace function public.orders_stock_before_delete()
+returns trigger language plpgsql set search_path = '' as $$
+begin
+  update public.products p
+     set stock_qty = p.stock_qty + x.q
+    from (select product_id, sum(quantity) q from public.order_items
+           where order_id = old.id and from_stock and product_id is not null
+           group by product_id) x
+   where p.id = x.product_id;
+  return old;
+end;
+$$;
+
+create trigger orders_stock_del before delete on public.orders
+  for each row execute function public.orders_stock_before_delete();
+
+create or replace function public.orders_stock_status_change()
+returns trigger language plpgsql set search_path = '' as $$
+declare
+  r record;
+begin
+  if old.status <> 'cancelado' and new.status = 'cancelado' then
+    update public.products p
+       set stock_qty = p.stock_qty + x.q
+      from (select product_id, sum(quantity) q from public.order_items
+             where order_id = new.id and from_stock and product_id is not null
+             group by product_id) x
+     where p.id = x.product_id;
+    update public.order_items set from_stock = false where order_id = new.id and from_stock;
+
+  elsif old.status = 'cancelado' and new.status <> 'cancelado' then
+    for r in
+      select i.id, i.quantity, p.id as pid, p.name, p.stock_qty
+        from public.order_items i
+        join public.products p on p.id = i.product_id
+       where i.order_id = new.id and p.stock_enabled
+       for update of p
+    loop
+      if r.stock_qty < r.quantity then
+        raise exception 'Estoque insuficiente de "%": restam %.', r.name, r.stock_qty;
+      end if;
+      update public.products set stock_qty = stock_qty - r.quantity where id = r.pid;
+      update public.order_items set from_stock = true where id = r.id;
+    end loop;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger orders_stock_status after update of status on public.orders
+  for each row execute function public.orders_stock_status_change();
 
 -- ---------------------------------------------------------------------
--- 6. REALTIME (o Realtime respeita o RLS: cliente só recebe o próprio pedido)
+-- 7. SALVAR PEDIDO (criar ou editar) em uma única transação
 -- ---------------------------------------------------------------------
-alter publication supabase_realtime add table public.orders;
+create or replace function public.save_order(p_order jsonb, p_items jsonb)
+returns uuid language plpgsql set search_path = '' as $$
+declare
+  v_id          uuid := nullif(p_order ->> 'id', '')::uuid;
+  v_customer    uuid := nullif(p_order ->> 'customer_id', '')::uuid;
+  v_name        text := nullif(btrim(p_order ->> 'customer_name'), '');
+  v_phone       text := nullif(btrim(p_order ->> 'customer_phone'), '');
+  v_fee         numeric := round(coalesce((p_order ->> 'delivery_fee')::numeric, 0), 2);
+  v_discount    numeric := round(coalesce((p_order ->> 'discount')::numeric, 0), 2);
+  v_paid        numeric := round(coalesce((p_order ->> 'amount_paid')::numeric, 0), 2);
+  v_subtotal    numeric := 0;
+  v_item        jsonb;
+  v_idx         int := 0;
+begin
+  if not public.is_admin() then
+    raise exception 'Sem permissão.';
+  end if;
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'Adicione pelo menos um item ao pedido.';
+  end if;
+
+  -- Cliente: existente ou cadastra na hora
+  if v_customer is not null then
+    select name, coalesce(v_phone, phone) into v_name, v_phone from public.customers where id = v_customer;
+    if not found then raise exception 'Cliente não encontrado.'; end if;
+  elsif v_name is not null then
+    insert into public.customers (name, phone, address)
+    values (v_name, v_phone, nullif(btrim(p_order ->> 'address'), ''))
+    returning id into v_customer;
+  else
+    raise exception 'Informe o cliente.';
+  end if;
+
+  select coalesce(sum(round((i ->> 'unit_price')::numeric * (i ->> 'quantity')::numeric, 2)), 0)
+    into v_subtotal from jsonb_array_elements(p_items) i;
+
+  if v_id is null then
+    insert into public.orders (customer_id, customer_name, customer_phone, status)
+    values (v_customer, v_name, v_phone, coalesce(nullif(p_order ->> 'status', ''), 'novo')::public.order_status)
+    returning id into v_id;
+  else
+    delete from public.order_items where order_id = v_id;   -- devolve estoque
+  end if;
+
+  update public.orders set
+    customer_id    = v_customer,
+    customer_name  = v_name,
+    customer_phone = v_phone,
+    delivery_type  = coalesce(nullif(p_order ->> 'delivery_type', ''), 'retirada'),
+    address        = nullif(btrim(p_order ->> 'address'), ''),
+    due_at         = nullif(p_order ->> 'due_at', '')::timestamptz,
+    payment_method = nullif(p_order ->> 'payment_method', ''),
+    amount_paid    = v_paid,
+    subtotal       = v_subtotal,
+    delivery_fee   = v_fee,
+    discount       = v_discount,
+    total          = greatest(v_subtotal + v_fee - v_discount, 0),
+    notes          = nullif(btrim(p_order ->> 'notes'), '')
+  where id = v_id;
+
+  if not found then raise exception 'Pedido não encontrado.'; end if;
+
+  for v_item in select * from jsonb_array_elements(p_items) loop
+    v_idx := v_idx + 1;
+    if coalesce((v_item ->> 'quantity')::numeric, 0) <= 0 then
+      raise exception 'Quantidade inválida em "%".', v_item ->> 'product_name';
+    end if;
+    insert into public.order_items
+      (order_id, product_id, product_name, unit, unit_price, quantity, options, note, line_total, sort_order)
+    values (
+      v_id,
+      nullif(v_item ->> 'product_id', '')::uuid,
+      coalesce(nullif(btrim(v_item ->> 'product_name'), ''), 'Item'),
+      coalesce(nullif(v_item ->> 'unit', ''), 'un'),
+      round((v_item ->> 'unit_price')::numeric, 2),
+      (v_item ->> 'quantity')::numeric,
+      coalesce(v_item -> 'options', '{}'::jsonb),
+      nullif(btrim(v_item ->> 'note'), ''),
+      round((v_item ->> 'unit_price')::numeric * (v_item ->> 'quantity')::numeric, 2),
+      v_idx
+    );
+  end loop;
+
+  return v_id;
+end;
+$$;
+
+revoke all on function public.save_order(jsonb, jsonb) from public, anon;
+grant execute on function public.save_order(jsonb, jsonb) to authenticated;
 
 -- ---------------------------------------------------------------------
--- 7. STORAGE: fotos dos produtos (leitura pública, upload só admin)
+-- 8. ROW LEVEL SECURITY: tudo só para quem tem acesso
 -- ---------------------------------------------------------------------
-insert into storage.buckets (id, name, public)
-values ('product-images', 'product-images', true)
-on conflict (id) do nothing;
+alter table public.allowed_emails enable row level security;
+alter table public.profiles       enable row level security;
+alter table public.customers      enable row level security;
+alter table public.option_lists   enable row level security;
+alter table public.option_items   enable row level security;
+alter table public.products       enable row level security;
+alter table public.orders         enable row level security;
+alter table public.order_items    enable row level security;
 
-create policy "product-images: admin envia"
-  on storage.objects for insert to authenticated
-  with check (bucket_id = 'product-images' and public.is_admin());
+create policy "equipe: tudo" on public.allowed_emails for all to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "equipe: tudo" on public.customers      for all to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "equipe: tudo" on public.option_lists   for all to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "equipe: tudo" on public.option_items   for all to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "equipe: tudo" on public.products       for all to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "equipe: tudo" on public.orders         for all to authenticated using (public.is_admin()) with check (public.is_admin());
+create policy "equipe: tudo" on public.order_items    for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
-create policy "product-images: admin atualiza"
-  on storage.objects for update to authenticated
-  using (bucket_id = 'product-images' and public.is_admin());
+create policy "profiles: próprio ou equipe" on public.profiles for select to authenticated
+  using (id = auth.uid() or public.is_admin());
+create policy "profiles: editar próprio" on public.profiles for update to authenticated
+  using (id = auth.uid()) with check (id = auth.uid());
 
-create policy "product-images: admin exclui"
-  on storage.objects for delete to authenticated
-  using (bucket_id = 'product-images' and public.is_admin());
+-- Nada para visitantes anônimos
+revoke all on public.allowed_emails, public.profiles, public.customers, public.option_lists,
+              public.option_items, public.products, public.orders, public.order_items from anon;
+-- Ninguém se autopromove: no perfil, só o nome é editável
+revoke insert, update, delete on public.profiles from authenticated;
+grant update (full_name) on public.profiles to authenticated;
 
 -- ---------------------------------------------------------------------
--- 8. CARDÁPIO INICIAL (do cardápio impresso)
+-- 9. TEMPO REAL (as duas veem as mudanças uma da outra na hora)
 -- ---------------------------------------------------------------------
-insert into public.products
-  (name, description, category, price, unit, min_quantity, quantity_step, price_is_from, options, sort_order)
-values
-(
-  'Bolo com Recheio Tradicional',
-  'Bolo de festa por quilo. Escolha a massa e o recheio. Adicionais com valor a combinar.',
-  'bolos', 65.00, 'kg', 1, 0.5, false,
-  '[
-    {"name":"Massa","type":"single","required":true,"choices":["Branca","Chocolate"]},
-    {"name":"Recheio","type":"single","required":true,"choices":["Abacaxi","Beijinho","Brigadeiro","Brigadeiro de Ninho","Brigadeiro de Maracujá","Doce de Leite"]},
-    {"name":"Adicionais (valor a combinar)","type":"multi","required":false,"choices":["Morango","Abacaxi","Bombom","Nutella","Creme de Avelã","Nozes"]}
-  ]'::jsonb,
-  10
-),
-(
-  'Bolo com Recheio Especial',
-  'Bolo de festa por quilo com recheios especiais. Adicionais com valor a combinar.',
-  'bolos', 80.00, 'kg', 1, 0.5, false,
-  '[
-    {"name":"Massa","type":"single","required":true,"choices":["Branca","Chocolate"]},
-    {"name":"Recheio","type":"single","required":true,"choices":["Alpino","Mousse de Chocolate Meio Amargo","Ninho com Morangos","Doce de Leite com Ameixa","Doce de Leite com Nozes","4 Leites"]},
-    {"name":"Adicionais (valor a combinar)","type":"multi","required":false,"choices":["Morango","Abacaxi","Bombom","Nutella","Creme de Avelã","Nozes"]}
-  ]'::jsonb,
-  20
-),
-(
-  'Caseirinho',
-  'Bolo caseiro com cobertura. Valor a partir de R$ 12,00 (confirmamos pelo WhatsApp).',
-  'bolos', 12.00, 'un', 1, 1, true,
-  '[
-    {"name":"Massa","type":"single","required":true,"choices":["Cenoura","Chocolate","Limão","Branca"]},
-    {"name":"Cobertura","type":"single","required":true,"choices":["Brigadeiro","Ninho","Maracujá","Limão"]}
-  ]'::jsonb,
-  30
-),
-('Mini Tortinha de Mousse de Maracujá', 'Tortinha individual.', 'tortas', 9.00, 'un', 1, 1, false, '[]'::jsonb, 10),
-('Mini Tortinha de Mousse de Limão',    'Tortinha individual.', 'tortas', 9.00, 'un', 1, 1, false, '[]'::jsonb, 20),
-('Mini Tortinha de Mousse de Morango',  'Tortinha individual.', 'tortas', 9.00, 'un', 1, 1, false, '[]'::jsonb, 30);
+alter publication supabase_realtime add table public.orders, public.products, public.customers;
+
+-- ---------------------------------------------------------------------
+-- 10. DADOS INICIAIS (do cardápio impresso)
+-- ---------------------------------------------------------------------
+insert into public.option_lists (name, sort_order) values
+  ('Massas de bolo', 10), ('Recheios tradicionais', 20), ('Recheios especiais', 30),
+  ('Adicionais', 40), ('Massas de caseirinho', 50), ('Coberturas de caseirinho', 60);
+
+insert into public.option_items (list_id, name, sort_order)
+select l.id, v.name, v.ord
+from public.option_lists l
+join (values
+  ('Massas de bolo', 'Branca', 1), ('Massas de bolo', 'Chocolate', 2),
+  ('Recheios tradicionais', 'Abacaxi', 1), ('Recheios tradicionais', 'Beijinho', 2),
+  ('Recheios tradicionais', 'Brigadeiro', 3), ('Recheios tradicionais', 'Brigadeiro de Ninho', 4),
+  ('Recheios tradicionais', 'Brigadeiro de Maracujá', 5), ('Recheios tradicionais', 'Doce de Leite', 6),
+  ('Recheios especiais', 'Alpino', 1), ('Recheios especiais', 'Mousse de Chocolate Meio Amargo', 2),
+  ('Recheios especiais', 'Ninho com Morangos', 3), ('Recheios especiais', 'Doce de Leite com Ameixa', 4),
+  ('Recheios especiais', 'Doce de Leite com Nozes', 5), ('Recheios especiais', '4 Leites', 6),
+  ('Adicionais', 'Morango', 1), ('Adicionais', 'Abacaxi', 2), ('Adicionais', 'Bombom', 3),
+  ('Adicionais', 'Nutella', 4), ('Adicionais', 'Creme de Avelã', 5), ('Adicionais', 'Nozes', 6),
+  ('Massas de caseirinho', 'Cenoura', 1), ('Massas de caseirinho', 'Chocolate', 2),
+  ('Massas de caseirinho', 'Limão', 3), ('Massas de caseirinho', 'Branca', 4),
+  ('Coberturas de caseirinho', 'Brigadeiro', 1), ('Coberturas de caseirinho', 'Ninho', 2),
+  ('Coberturas de caseirinho', 'Maracujá', 3), ('Coberturas de caseirinho', 'Limão', 4)
+) as v(list, name, ord) on v.list = l.name;
+
+insert into public.products (name, category, description, price, unit, price_is_from, option_groups, stock_enabled, sort_order)
+select v.name, v.category, v.descr, v.price, v.unit, v.from_, v.groups, v.stock, v.ord
+from (values
+  ('Bolo com Recheio Tradicional', 'bolos', 'Bolo de festa por quilo.', 65.00, 'kg', false,
+    jsonb_build_array(
+      jsonb_build_object('label', 'Massa',     'list_id', (select id from public.option_lists where name = 'Massas de bolo'),        'required', true,  'multi', false),
+      jsonb_build_object('label', 'Recheio',   'list_id', (select id from public.option_lists where name = 'Recheios tradicionais'), 'required', true,  'multi', false),
+      jsonb_build_object('label', 'Adicionais','list_id', (select id from public.option_lists where name = 'Adicionais'),            'required', false, 'multi', true)
+    ), false, 10),
+  ('Bolo com Recheio Especial', 'bolos', 'Bolo de festa por quilo, recheios especiais.', 80.00, 'kg', false,
+    jsonb_build_array(
+      jsonb_build_object('label', 'Massa',     'list_id', (select id from public.option_lists where name = 'Massas de bolo'),     'required', true,  'multi', false),
+      jsonb_build_object('label', 'Recheio',   'list_id', (select id from public.option_lists where name = 'Recheios especiais'), 'required', true,  'multi', false),
+      jsonb_build_object('label', 'Adicionais','list_id', (select id from public.option_lists where name = 'Adicionais'),         'required', false, 'multi', true)
+    ), false, 20),
+  ('Caseirinho', 'bolos', 'Bolo caseiro com cobertura.', 12.00, 'un', true,
+    jsonb_build_array(
+      jsonb_build_object('label', 'Massa',     'list_id', (select id from public.option_lists where name = 'Massas de caseirinho'),     'required', true, 'multi', false),
+      jsonb_build_object('label', 'Cobertura', 'list_id', (select id from public.option_lists where name = 'Coberturas de caseirinho'), 'required', true, 'multi', false)
+    ), false, 30),
+  ('Mini Tortinha de Mousse de Maracujá', 'tortas', 'Tortinha individual.', 9.00, 'un', false, '[]'::jsonb, true, 10),
+  ('Mini Tortinha de Mousse de Limão',    'tortas', 'Tortinha individual.', 9.00, 'un', false, '[]'::jsonb, true, 20),
+  ('Mini Tortinha de Mousse de Morango',  'tortas', 'Tortinha individual.', 9.00, 'un', false, '[]'::jsonb, true, 30)
+) as v(name, category, descr, price, unit, from_, groups, stock, ord);
 
 -- =====================================================================
--- 9. DEPOIS DO PRIMEIRO LOGIN de cada administradora, rode (trocando os e-mails):
---
---   update public.profiles set is_admin = true
---   where email in ('seu-email@gmail.com', 'email-da-sua-mae@gmail.com');
+-- Para liberar outro e-mail (ex.: sua mãe), use a tela Configurações
+-- do sistema, ou rode:
+--   insert into public.allowed_emails (email) values ('email-da-sua-mae@gmail.com');
 -- =====================================================================

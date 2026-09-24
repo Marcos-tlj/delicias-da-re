@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-const PROTECTED = ["/checkout", "/pedidos", "/conta", "/admin"];
+const PUBLIC = ["/login", "/auth"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -17,43 +17,26 @@ export async function updateSession(request: NextRequest) {
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
           response = NextResponse.next({ request });
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options),
-          );
+          cookiesToSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
         },
       },
     },
   );
 
-  // IMPORTANTE: getUser() valida o token no Supabase (não confie só no cookie).
   const {
     data: { user },
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
-  const needsLogin = PROTECTED.some((p) => path === p || path.startsWith(p + "/"));
+  const isPublic = PUBLIC.some((p) => path === p || path.startsWith(p + "/"));
 
-  const redirectTo = (pathname: string, params?: Record<string, string>) => {
+  if (!user && !isPublic) {
     const url = request.nextUrl.clone();
-    url.pathname = pathname;
+    url.pathname = "/login";
     url.search = "";
-    if (params) Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
     const res = NextResponse.redirect(url);
     response.cookies.getAll().forEach((c) => res.cookies.set(c));
     return res;
-  };
-
-  if (!user && needsLogin) {
-    return redirectTo("/login", { next: path });
-  }
-
-  if (user && (path === "/admin" || path.startsWith("/admin/"))) {
-    const { data: profile } = await supabase
-      .from("profiles")
-      .select("is_admin")
-      .eq("id", user.id)
-      .single();
-    if (!profile?.is_admin) return redirectTo("/");
   }
 
   return response;

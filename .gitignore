@@ -14,3 +14,5 @@ env-local.txt
 build-log.txt
 push-log.txt
 *.bat
+clean-log.txt
+limpar-log.txt

@@ -1,11 +1,10 @@
+import "server-only";
 import { createServerClient } from "@supabase/ssr";
-import { createClient as createPlainClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
-/** Cliente com a sessão do usuário (Server Components, Server Actions, Route Handlers). */
 export async function createClient() {
   const cookieStore = await cookies();
-
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -16,11 +15,9 @@ export async function createClient() {
         },
         setAll(cookiesToSet) {
           try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options),
-            );
+            cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
           } catch {
-            // Chamado de um Server Component: o middleware já renova a sessão.
+            /* Server Component: o middleware renova a sessão */
           }
         },
       },
@@ -28,28 +25,26 @@ export async function createClient() {
   );
 }
 
-/** Cliente anônimo, sem cookies — permite cachear o cardápio público. */
-export function createPublicClient() {
-  return createPlainClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { auth: { persistSession: false, autoRefreshToken: false } },
-  );
-}
-
-/** Usuário logado + profile (ou nulls). */
-export async function getSessionProfile() {
+/** Exige usuário logado com acesso liberado. Use em toda página/ação interna. */
+export async function requireStaff() {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return { supabase, user: null, profile: null };
+  if (!user) redirect("/login");
+
+  const { data: ok } = await supabase.rpc("is_admin");
+  if (!ok) redirect("/login?erro=acesso");
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("id, full_name, phone, email, is_admin")
+    .select("full_name, email")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
 
-  return { supabase, user, profile };
+  return {
+    supabase,
+    user,
+    name: (profile?.full_name as string | null) || user.email?.split("@")[0] || "Equipe",
+  };
 }

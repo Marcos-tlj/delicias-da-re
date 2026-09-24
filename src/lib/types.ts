@@ -1,85 +1,97 @@
-export type Category = "bolos" | "doces" | "tortas";
+export type Category = "bolos" | "doces" | "tortas" | "outros";
 export type Unit = "un" | "kg";
+export type OrderStatus = "novo" | "confirmado" | "em_preparo" | "pronto" | "entregue" | "cancelado";
+export type DeliveryType = "retirada" | "entrega";
+export type PaymentMethod = "pix" | "cartao" | "dinheiro" | "outro";
+export type PaymentStatus = "pendente" | "parcial" | "pago";
 
-export type OptionGroup = {
-  name: string;
-  type: "single" | "multi";
-  required: boolean;
-  choices: string[];
-};
+export type OptionGroup = { label: string; list_id: string; required: boolean; multi: boolean };
+export type OptionItem = { id: string; list_id: string; name: string; is_active: boolean; sort_order: number };
+export type OptionList = { id: string; name: string; sort_order: number; option_items?: OptionItem[] };
 
 export type Product = {
   id: string;
   name: string;
-  description: string | null;
   category: Category;
+  description: string | null;
   price: number;
   unit: Unit;
-  min_quantity: number;
-  quantity_step: number;
   price_is_from: boolean;
-  options: OptionGroup[];
-  image_url: string | null;
-  is_available: boolean;
+  option_groups: OptionGroup[];
+  is_active: boolean;
+  stock_enabled: boolean;
+  stock_qty: number;
+  stock_min: number;
   sort_order: number;
+};
+
+export type Customer = {
+  id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  neighborhood: string | null;
+  notes: string | null;
+  created_at: string;
 };
 
 export type SelectedOptions = Record<string, string | string[]>;
 
-export type OrderStatus =
-  | "pendente"
-  | "aceito"
-  | "em_preparo"
-  | "saiu_entrega"
-  | "finalizado"
-  | "cancelado";
-
-export type DeliveryType = "retirada" | "delivery";
-export type PaymentMethod = "pix" | "cartao_entrega";
-
-export type Address = {
-  cep?: string;
-  street: string;
-  number: string;
-  complement?: string;
-  neighborhood: string;
-  city?: string;
-  reference?: string;
-};
-
 export type OrderItem = {
-  id: number;
+  id?: number;
+  product_id: string | null;
   product_name: string;
   unit: Unit;
   unit_price: number;
   quantity: number;
   options: SelectedOptions;
   note: string | null;
-  line_total: number;
+  line_total?: number;
 };
 
 export type Order = {
   id: string;
   code: number;
-  user_id: string;
+  customer_id: string | null;
+  customer_name: string;
+  customer_phone: string | null;
   status: OrderStatus;
   delivery_type: DeliveryType;
-  address: Address | null;
-  payment_method: PaymentMethod;
-  customer_name: string;
-  customer_phone: string;
-  notes: string | null;
-  scheduled_for: string | null;
+  address: string | null;
+  due_at: string | null;
+  payment_method: PaymentMethod | null;
+  amount_paid: number;
   subtotal: number;
   delivery_fee: number;
+  discount: number;
   total: number;
+  payment_status: PaymentStatus;
+  notes: string | null;
   created_at: string;
   updated_at: string;
   order_items?: OrderItem[];
 };
 
-export const CATEGORIES: { id: Category; label: string; emoji: string }[] = [
-  { id: "bolos", label: "Bolos", emoji: "🎂" },
-  { id: "doces", label: "Doces", emoji: "🍬" },
-  { id: "tortas", label: "Tortas", emoji: "🥧" },
+export const CATEGORIES: { id: Category; label: string }[] = [
+  { id: "bolos", label: "Bolos" },
+  { id: "doces", label: "Doces" },
+  { id: "tortas", label: "Tortas" },
+  { id: "outros", label: "Outros" },
+];
+
+export const STATUSES: { id: OrderStatus; label: string }[] = [
+  { id: "novo", label: "Novo" },
+  { id: "confirmado", label: "Confirmado" },
+  { id: "em_preparo", label: "Em preparo" },
+  { id: "pronto", label: "Pronto" },
+  { id: "entregue", label: "Entregue" },
+  { id: "cancelado", label: "Cancelado" },
+];
+
+export const PAYMENT_METHODS: { id: PaymentMethod; label: string }[] = [
+  { id: "pix", label: "PIX" },
+  { id: "cartao", label: "Cartão" },
+  { id: "dinheiro", label: "Dinheiro" },
+  { id: "outro", label: "Outro" },
 ];
