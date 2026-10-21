@@ -715,3 +715,9 @@ grant select, insert, update, delete on
 grant select on public.profiles to authenticated;
 grant usage, select on all sequences in schema public to authenticated;
 grant execute on function public.is_admin() to authenticated;
+-- Funções internas: gatilhos do cadastro só o banco usa; o resto só para quem está logado
+revoke execute on function public.check_signup_allowed() from public, anon, authenticated;
+revoke execute on function public.handle_new_user() from public, anon, authenticated;
+revoke execute on function public.is_admin() from public, anon;
+revoke execute on function public.save_order(jsonb, jsonb) from public, anon;
+grant execute on function public.save_order(jsonb, jsonb) to authenticated;
