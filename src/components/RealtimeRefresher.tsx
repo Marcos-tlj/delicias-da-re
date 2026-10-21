@@ -34,7 +34,12 @@ export default function RealtimeRefresher() {
         .subscribe();
     })();
 
-    const onVisible = () => document.visibilityState === "visible" && refresh();
+    // ao voltar para o app, só recarrega se ficou fora por mais de 30 s
+    let hiddenAt = 0;
+    const onVisible = () => {
+      if (document.visibilityState === "hidden") hiddenAt = Date.now();
+      else if (hiddenAt && Date.now() - hiddenAt > 30_000) refresh();
+    };
     document.addEventListener("visibilitychange", onVisible);
 
     return () => {

@@ -2,6 +2,7 @@
 
 Sistema interno da confeitaria, só para a equipe (Marcos e a Rê). Funciona no computador e no celular.
 **Stack:** Next.js 15 + TypeScript + Tailwind CSS 4 · Supabase (Postgres, Auth, Realtime) · Vercel.
+**Região:** banco (Supabase `sa-east-1`) e servidor (Vercel `gru1`, definido em `vercel.json`) ficam em São Paulo. Mantenha os dois juntos: cada consulta ao banco atravessa essa distância.
 **No ar:** https://delicias-da-re.vercel.app
 
 ## O que faz
@@ -24,10 +25,10 @@ Sistema interno da confeitaria, só para a equipe (Marcos e a Rê). Funciona no 
 - Não há chave secreta no app. As variáveis ficam no `.env.local`, que não vai para o GitHub, e nas configurações da Vercel.
 
 ## Primeiro acesso
-1. Acesse o site → **Primeiro acesso** → digite nome, e-mail liberado e uma senha (mínimo de 8 caracteres).
+1. Acesse o site → **Primeiro acesso** → digite nome, e-mail liberado e uma senha (mínimo de 8 caracteres). Chega um e-mail de confirmação: abra o link **no mesmo aparelho e navegador** e você entra direto.
 2. Para liberar outra pessoa: **Configurações → Liberar novo e-mail**. Depois ela usa "Primeiro acesso".
 
-> No Supabase, "Confirm email" fica **desligado** (Authentication → Sign In / Providers → Email). Isso é seguro porque só e-mails da lista conseguem se cadastrar, e evita depender do envio de e-mails.
+> No Supabase, "Confirm email" fica **ligado** (Authentication → Sign In / Providers): além de o e-mail precisar estar liberado, a pessoa prova que é dona dele. Em Authentication → URL Configuration, a Site URL é `https://delicias-da-re.vercel.app` e as Redirect URLs incluem `https://delicias-da-re.vercel.app/**`.
 
 ## Rodar localmente
 ```bash

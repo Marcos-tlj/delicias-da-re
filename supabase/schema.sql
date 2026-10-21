@@ -1,5 +1,5 @@
 -- =====================================================================
---  DELÍCIAS DA RÊ — Plataforma interna de pedidos (v2)
+--  DELÍCIAS DA RÊ — Plataforma interna de pedidos, estoque e lucro (v3)
 --  Supabase > SQL Editor > cole tudo > Run.
 --  ATENÇÃO: a seção 0 apaga as tabelas do app e recria do zero.
 -- =====================================================================
@@ -700,4 +700,24 @@ end;
 $$;
 
 revoke all on function public.save_order(jsonb, jsonb) from public, anon;
+grant execute on function public.save_order(jsonb, jsonb) to authenticated;
+
+-- =====================================================================
+-- 12. PERMISSÕES DA API (quem decide o acesso de verdade é o RLS acima)
+--     Explícito para funcionar mesmo se o projeto não expõe tabelas
+--     novas automaticamente.
+-- =====================================================================
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on
+  public.allowed_emails, public.customers, public.option_lists, public.option_items,
+  public.products, public.orders, public.order_items, public.expenses
+  to authenticated;
+grant select on public.profiles to authenticated;
+grant usage, select on all sequences in schema public to authenticated;
+grant execute on function public.is_admin() to authenticated;
+-- Funções internas: gatilhos do cadastro só o banco usa; o resto só para quem está logado
+revoke execute on function public.check_signup_allowed() from public, anon, authenticated;
+revoke execute on function public.handle_new_user() from public, anon, authenticated;
+revoke execute on function public.is_admin() from public, anon;
+revoke execute on function public.save_order(jsonb, jsonb) from public, anon;
 grant execute on function public.save_order(jsonb, jsonb) to authenticated;
