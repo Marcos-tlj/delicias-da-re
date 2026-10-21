@@ -13,7 +13,8 @@ function friendly(msg: string) {
   if (m.includes("invalid login")) return "E-mail ou senha incorretos.";
   if (m.includes("already registered") || m.includes("already been registered")) return "Esse e-mail já tem conta. Use “Entrar”.";
   if (m.includes("password")) return "A senha precisa ter pelo menos 8 caracteres.";
-  if (m.includes("email not confirmed")) return "E-mail ainda não confirmado.";
+  if (m.includes("email not confirmed")) return "Falta confirmar o e-mail: abra o link que enviamos para a sua caixa de entrada (veja também o spam).";
+  if (m.includes("rate limit") || m.includes("security purposes")) return "Muitas tentativas seguidas. Espere alguns minutos e tente de novo.";
   return "Não foi possível entrar. Tente novamente.";
 }
 
@@ -25,14 +26,20 @@ export default function LoginForm() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState(
-    params.get("erro") === "acesso" ? "Sua conta não tem acesso a este sistema." : "",
+    params.get("erro") === "acesso"
+      ? "Sua conta não tem acesso a este sistema."
+      : params.get("erro") === "link"
+        ? "O link de confirmação expirou ou foi aberto em outro navegador. Entre com seu e-mail e senha; se pedir confirmação, faça o “Primeiro acesso” de novo."
+        : "",
   );
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError("");
+    setNotice("");
     const supabase = createClient();
 
     if (params.get("erro") === "acesso") await supabase.auth.signOut();
@@ -43,7 +50,7 @@ export default function LoginForm() {
         : await supabase.auth.signUp({
             email: email.trim(),
             password,
-            options: { data: { full_name: name.trim() } },
+            options: { data: { full_name: name.trim() }, emailRedirectTo: `${window.location.origin}/auth/callback` },
           });
 
     if (res.error) {
@@ -52,7 +59,8 @@ export default function LoginForm() {
       return;
     }
     if (mode === "criar" && !res.data.session) {
-      setError("Conta criada, mas o Supabase pediu confirmação por e-mail. Desative “Confirm email” no painel.");
+      // confirmação de e-mail ligada (mais seguro): o link leva direto para dentro do sistema
+      setNotice(`Quase lá! Enviamos um link de confirmação para ${email.trim()}. Abra o e-mail neste mesmo aparelho e navegador e toque no link para entrar. Se não aparecer, veja o spam.`);
       setLoading(false);
       return;
     }
@@ -146,6 +154,11 @@ export default function LoginForm() {
               />
             </Field>
             <ErrorNote>{error}</ErrorNote>
+            {notice && (
+              <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800">
+                {notice}
+              </p>
+            )}
             <Button variant="dark" size="lg" className="w-full" disabled={loading}>
               <Lock className="h-4 w-4" />
               {loading ? "Aguarde…" : mode === "entrar" ? "Entrar" : "Criar acesso"}
