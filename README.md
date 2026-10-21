@@ -2,6 +2,7 @@
 
 Sistema interno da confeitaria, só para a equipe (Marcos e a Rê). Funciona no computador e no celular.
 **Stack:** Next.js 15 + TypeScript + Tailwind CSS 4 · Supabase (Postgres, Auth, Realtime) · Vercel.
+**Região:** banco (Supabase `sa-east-1`) e servidor (Vercel `gru1`, definido em `vercel.json`) ficam em São Paulo. Mantenha os dois juntos: cada consulta ao banco atravessa essa distância.
 **No ar:** https://delicias-da-re.vercel.app
 
 ## O que faz
