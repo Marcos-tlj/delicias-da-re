@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  BarChart3,
   Cake,
   ClipboardList,
   Home,
@@ -21,6 +22,7 @@ import { signOut } from "@/app/(app)/actions";
 const NAV = [
   { href: "/", label: "Início", icon: Home },
   { href: "/pedidos", label: "Pedidos", icon: ClipboardList },
+  { href: "/vendas", label: "Vendas e lucro", short: "Vendas", icon: BarChart3 },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/produtos", label: "Produtos e estoque", short: "Produtos", icon: Cake },
   { href: "/sabores", label: "Sabores e opções", short: "Sabores", icon: Layers },
@@ -42,7 +44,7 @@ function Brand({ light }: { light?: boolean }) {
           Delícias da Rê
         </span>
         <span className={cn("block text-[11px] font-medium tracking-wide uppercase", light ? "text-white/45" : "text-ink-3")}>
-          Gestão de pedidos
+          Pedidos e finanças
         </span>
       </span>
     </Link>
@@ -133,12 +135,12 @@ export default function AppShell({ userName, children }: { userName: string; chi
               <Plus className="h-6 w-6" strokeWidth={2.5} />
             </Link>
           </div>
-          <TabLink href="/clientes" label="Clientes" icon={Users} active={isActive(path, "/clientes")} />
+          <TabLink href="/vendas" label="Vendas" icon={BarChart3} active={isActive(path, "/vendas")} />
           <button
             onClick={() => setMenuOpen(true)}
             className={cn(
               "flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[11px] font-semibold",
-              ["/produtos", "/sabores", "/configuracoes"].some((h) => isActive(path, h)) ? "text-brand" : "text-ink-3",
+              ["/clientes", "/produtos", "/sabores", "/configuracoes"].some((h) => isActive(path, h)) ? "text-brand" : "text-ink-3",
             )}
           >
             <Menu className="h-[22px] w-[22px]" strokeWidth={1.9} />

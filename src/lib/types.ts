@@ -23,7 +23,36 @@ export type Product = {
   stock_qty: number;
   stock_min: number;
   sort_order: number;
+  cost: number;
+  cost_items: CostItem[];
+  margin_pct: number;
+  margin_mode: MarginMode;
+  price_auto: boolean;
+  price_rounding: number;
 };
+
+export type MarginMode = "markup" | "margin";
+export type CostItem = { name: string; value: number };
+
+export type ExpenseCategory = "ingredientes" | "embalagem" | "gas_energia" | "entrega" | "equipamentos" | "divulgacao" | "outros";
+export type Expense = {
+  id: string;
+  spent_on: string;
+  description: string;
+  category: ExpenseCategory;
+  amount: number;
+  created_at: string;
+};
+
+export const EXPENSE_CATEGORIES: { id: ExpenseCategory; label: string }[] = [
+  { id: "ingredientes", label: "Ingredientes" },
+  { id: "embalagem", label: "Embalagens" },
+  { id: "gas_energia", label: "Gás e energia" },
+  { id: "entrega", label: "Entregas" },
+  { id: "equipamentos", label: "Equipamentos" },
+  { id: "divulgacao", label: "Divulgação" },
+  { id: "outros", label: "Outros" },
+];
 
 export type Customer = {
   id: string;
@@ -48,6 +77,7 @@ export type OrderItem = {
   options: SelectedOptions;
   note: string | null;
   line_total?: number;
+  unit_cost?: number;
 };
 
 export type Order = {
@@ -68,6 +98,7 @@ export type Order = {
   total: number;
   payment_status: PaymentStatus;
   notes: string | null;
+  sale_channel?: "pedido" | "balcao";
   created_at: string;
   updated_at: string;
   order_items?: OrderItem[];

@@ -11,6 +11,7 @@ export const metadata = { title: "Produtos e estoque" };
 const FILTERS = [
   { id: "todos", label: "Todos" },
   { id: "estoque", label: "Prontos (com estoque)" },
+  { id: "sem-custo", label: "Sem custo" },
   { id: "inativos", label: "Pausados" },
 ] as const;
 
@@ -21,12 +22,17 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
   let products = (data ?? []).map(normalizeProduct);
   if (filtro === "estoque") products = products.filter((p) => p.stock_enabled);
   if (filtro === "inativos") products = products.filter((p) => !p.is_active);
+  if (filtro === "sem-custo") products = products.filter((p) => !(p.cost > 0));
+  const all = (data ?? []).map(normalizeProduct);
+  const withCost = all.filter((p) => p.cost > 0 && p.price > 0);
+  const avgMargin = withCost.length ? withCost.reduce((s, p) => s + ((p.price - p.cost) / p.price) * 100, 0) / withCost.length : 0;
+  const missing = all.length - withCost.length;
 
   return (
     <>
       <PageHeader
         title="Produtos e estoque"
-        subtitle="Preços, disponibilidade e bolos prontos"
+        subtitle={withCost.length ? `Margem média de ${avgMargin.toLocaleString("pt-BR", { maximumFractionDigits: 0 })}%${missing ? ` · ${missing} sem custo` : ""}` : "Cadastre o custo de cada produto para calcular o lucro"}
         actions={
           <ButtonLink href="/produtos/novo" variant="primary">
             <Plus className="h-4 w-4" strokeWidth={2.5} /> Novo produto

@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Trash2, X } from "lucide-react";
-import type { Category, OptionGroup, OptionList, Product, Unit } from "@/lib/types";
+import { Calculator, Plus, Trash2, X } from "lucide-react";
+import type { Category, MarginMode, OptionGroup, OptionList, Product, Unit } from "@/lib/types";
 import { CATEGORIES } from "@/lib/types";
-import { numInput, parseNum } from "@/lib/format";
+import { brl, numInput, parseNum } from "@/lib/format";
+import { calcPrice, pctFmt, profitOf } from "@/lib/pricing";
 import { deleteProduct, saveProduct } from "../../actions";
-import { Button, Card, CardHeader, ErrorNote, Field, Input, Segmented, Select, Textarea, Toggle } from "@/components/ui";
+import { Button, Card, CardHeader, ErrorNote, Field, Input, Segmented, Select, Textarea, Toggle, cn } from "@/components/ui";
+
+const PRESETS = [30, 50, 80, 100, 150, 200];
 
 export default function ProductForm({ product, lists }: { product: Product | null; lists: OptionList[] }) {
   const router = useRouter();
@@ -28,6 +31,25 @@ export default function ProductForm({ product, lists }: { product: Product | nul
   const [sortOrder, setSortOrder] = useState(String(product?.sort_order ?? 0));
   const [groups, setGroups] = useState<OptionGroup[]>(product?.option_groups ?? []);
 
+  // ---- custo e margem ----
+  const [cost, setCost] = useState(product?.cost ? numInput(product.cost) : "");
+  const [costItems, setCostItems] = useState<{ name: string; value: string }[]>(
+    (product?.cost_items ?? []).map((c) => ({ name: c.name, value: numInput(c.value) })),
+  );
+  const [marginMode, setMarginMode] = useState<MarginMode>(product?.margin_mode ?? "markup");
+  const [marginPct, setMarginPct] = useState<number>(product?.margin_pct ?? 100);
+  const [rounding, setRounding] = useState<number>(product?.price_rounding ?? 0.5);
+  const [priceAuto, setPriceAuto] = useState<boolean>(product ? product.price_auto : true);
+
+  const costNum = costItems.length ? costItems.reduce((a, c) => a + parseNum(c.value), 0) : parseNum(cost);
+  const suggested = calcPrice(costNum, marginPct, marginMode, rounding);
+  const finalPrice = priceAuto && costNum > 0 ? suggested : parseNum(price);
+  const result = profitOf(finalPrice, costNum);
+  const maxPct = marginMode === "margin" ? 95 : 300;
+  const setPct = (v: number) => setMarginPct(Math.max(0, Math.min(marginMode === "margin" ? 95 : 1000, Math.round(v * 100) / 100 || 0)));
+  const updateCostItem = (i: number, patch: Partial<{ name: string; value: string }>) =>
+    setCostItems((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
+
   const updateGroup = (i: number, patch: Partial<OptionGroup>) => setGroups((gs) => gs.map((g, j) => (j === i ? { ...g, ...patch } : g)));
 
   const submit = (e: React.FormEvent) => {
@@ -39,7 +61,13 @@ export default function ProductForm({ product, lists }: { product: Product | nul
         name,
         category,
         description,
-        price: parseNum(price),
+        price: finalPrice,
+        cost: costNum,
+        cost_items: costItems.map((c) => ({ name: c.name, value: parseNum(c.value) })),
+        margin_pct: marginPct,
+        margin_mode: marginMode,
+        price_auto: priceAuto && costNum > 0,
+        price_rounding: rounding,
         unit,
         price_is_from: priceIsFrom,
         is_active: active,
@@ -100,6 +128,104 @@ export default function ProductForm({ product, lists }: { product: Product | nul
             <Field label="Descrição (opcional)">
               <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
             </Field>
+          </div>
+        </Card>
+
+        <Card>
+          <CardHeader title={<span className="inline-flex items-center gap-2"><Calculator className="h-4 w-4 text-brand" /> Custo e preço</span>} subtitle="Informe quanto gasta para produzir e escolha a margem de lucro" />
+          <div className="space-y-5 p-4 lg:p-5">
+            <div className="space-y-2.5">
+              <Field label={`Custo para produzir 1 ${unit === "kg" ? "kg" : "unidade"} (R$)`} hint={costItems.length ? "Soma dos itens abaixo." : "Ingredientes, embalagem, gás, sua mão de obra…"}>
+                <Input inputMode="decimal" value={costItems.length ? numInput(costNum) : cost} readOnly={costItems.length > 0} onChange={(e) => setCost(e.target.value)} placeholder="0,00" className={cn(costItems.length > 0 && "bg-bg")} />
+              </Field>
+              {costItems.map((c, i) => (
+                <div key={i} className="grid grid-cols-[1fr_110px_auto] gap-2">
+                  <Input value={c.name} onChange={(e) => updateCostItem(i, { name: e.target.value })} placeholder="Ex.: Leite condensado" aria-label="Item de custo" />
+                  <Input inputMode="decimal" value={c.value} onChange={(e) => updateCostItem(i, { value: e.target.value })} placeholder="0,00" aria-label="Valor do item" />
+                  <button type="button" onClick={() => setCostItems((cs) => cs.filter((_, j) => j !== i))} className="rounded-lg px-2.5 text-ink-3 hover:bg-red-50 hover:text-red-600" aria-label="Remover item">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setCostItems((cs) => (cs.length === 0 && parseNum(cost) > 0 ? [{ name: "Custo base", value: cost }, { name: "", value: "" }] : [...cs, { name: "", value: "" }]))
+                }
+                className="text-[13px] font-semibold text-brand hover:text-brand-dark"
+              >
+                + {costItems.length ? "Adicionar item" : "Detalhar custo por item"}
+              </button>
+            </div>
+
+            <Field label="Como calcular o lucro" hint={marginMode === "markup" ? `Soma a porcentagem ao custo: ${pctFmt(marginPct)} de ${brl(costNum)} = ${brl((costNum * marginPct) / 100)} de lucro.` : `O lucro vira ${pctFmt(marginPct)} do preço final. Ajuda a manter a margem mesmo dando desconto.`}>
+              <Segmented
+                value={marginMode}
+                onChange={(m) => {
+                  setMarginMode(m);
+                  if (m === "margin" && marginPct > 95) setMarginPct(60);
+                }}
+                options={[
+                  { value: "markup", label: "Sobre o custo" },
+                  { value: "margin", label: "Sobre a venda" },
+                ]}
+              />
+            </Field>
+
+            <div>
+              <span className="mb-1.5 block text-[13px] font-semibold text-ink-2">Porcentagem de lucro</span>
+              <div className="flex items-center gap-3">
+                <input type="range" min={0} max={maxPct} step={5} value={Math.min(marginPct, maxPct)} onChange={(e) => setPct(Number(e.target.value))} className="h-7 flex-1 accent-[var(--color-brand)]" aria-label="Porcentagem de lucro" />
+                <div className="relative w-24 shrink-0">
+                  <Input inputMode="decimal" value={String(marginPct).replace(".", ",")} onChange={(e) => setPct(parseNum(e.target.value))} className="pr-7 text-right" aria-label="Porcentagem" />
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-sm text-ink-3">%</span>
+                </div>
+              </div>
+              <div className="no-scrollbar mt-2 flex gap-1.5 overflow-x-auto">
+                {PRESETS.filter((v) => marginMode === "markup" || v <= 95).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setPct(v)}
+                    className={cn("shrink-0 rounded-full px-3 py-1 text-[13px] font-semibold ring-1 ring-inset transition", marginPct === v ? "bg-ink text-white ring-ink" : "text-ink-2 ring-line hover:bg-bg")}
+                  >
+                    {v}%
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Arredondar para cima">
+                <Select value={String(rounding)} onChange={(e) => setRounding(Number(e.target.value))}>
+                  <option value="0">Não arredondar</option>
+                  <option value="0.1">R$ 0,10</option>
+                  <option value="0.5">R$ 0,50</option>
+                  <option value="1">R$ 1,00</option>
+                </Select>
+              </Field>
+              <div className="rounded-xl bg-brand-soft px-3.5 py-2.5">
+                <p className="text-[12.5px] font-semibold text-brand-dark">Preço sugerido</p>
+                <p className="num font-display text-2xl font-bold text-brand-dark">{costNum > 0 ? brl(suggested) : "—"}</p>
+              </div>
+            </div>
+
+            <div className="border-t border-line pt-4">
+              <Toggle
+                checked={priceAuto}
+                onChange={setPriceAuto}
+                label="Usar o preço sugerido"
+                description={priceAuto ? "O preço de venda acompanha o custo e a margem." : "Você define o preço de venda abaixo."}
+              />
+              {(!priceAuto || costNum <= 0) && (
+                <Field label={unit === "kg" ? "Preço de venda por kg (R$)" : "Preço de venda por unidade (R$)"} className="mt-2">
+                  <Input inputMode="decimal" required value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0,00" />
+                </Field>
+              )}
+              <div className="mt-3">
+                <Toggle checked={priceIsFrom} onChange={setPriceIsFrom} label="Preço “a partir de”" description="Lembra de conferir o valor no pedido" />
+              </div>
+            </div>
           </div>
         </Card>
 
@@ -170,15 +296,27 @@ export default function ProductForm({ product, lists }: { product: Product | nul
       </div>
 
       <div className="space-y-5 lg:sticky lg:top-9 lg:self-start">
-        <Card>
-          <CardHeader title="Preço" />
-          <div className="space-y-3 p-4 lg:p-5">
-            <Field label={unit === "kg" ? "Preço por kg (R$)" : "Preço por unidade (R$)"}>
-              <Input inputMode="decimal" required value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0,00" />
-            </Field>
-            <Toggle checked={priceIsFrom} onChange={setPriceIsFrom} label="Preço “a partir de”" description="Lembra de conferir o valor no pedido" />
+        <div className="hero-card rounded-3xl p-5 text-white">
+          <p className="text-xs font-semibold tracking-[0.08em] text-white/70 uppercase">Preço de venda</p>
+          <p className="num font-display mt-1 text-4xl font-bold">
+            {brl(finalPrice)}
+            <span className="ml-1 text-base font-medium text-white/70">/{unit}</span>
+          </p>
+          <div className="num mt-4 grid grid-cols-3 gap-2">
+            {[
+              { l: "Custo", v: costNum > 0 ? brl(costNum) : "—" },
+              { l: "Lucro", v: costNum > 0 ? brl(result.profit) : "—" },
+              { l: "Margem", v: costNum > 0 && finalPrice > 0 ? pctFmt(result.margin) : "—" },
+            ].map((k) => (
+              <div key={k.l} className="rounded-2xl bg-white/10 px-2.5 py-2">
+                <p className="text-[11.5px] text-white/70">{k.l}</p>
+                <p className={cn("text-[14px] font-bold whitespace-nowrap", k.l === "Lucro" && result.profit < 0 && "text-red-200")}>{k.v}</p>
+              </div>
+            ))}
           </div>
-        </Card>
+          {costNum <= 0 && <p className="mt-3 text-[12.5px] text-white/75">Informe o custo para ver o lucro de cada venda.</p>}
+          {costNum > 0 && !priceAuto && <p className="mt-3 text-[12.5px] text-white/75">Com esse preço, o lucro é de {pctFmt(result.markup)} sobre o custo.</p>}
+        </div>
 
         <Card>
           <CardHeader title="Estoque" />

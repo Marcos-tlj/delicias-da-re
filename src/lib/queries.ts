@@ -8,6 +8,14 @@ export function normalizeProduct(p: Record<string, unknown>): Product {
     price: Number(p.price),
     stock_qty: Number(p.stock_qty),
     stock_min: Number(p.stock_min),
+    cost: Number(p.cost ?? 0),
+    margin_pct: Number(p.margin_pct ?? 100),
+    margin_mode: p.margin_mode === "margin" ? "margin" : "markup",
+    price_auto: !!p.price_auto,
+    price_rounding: Number(p.price_rounding ?? 0.5),
+    cost_items: Array.isArray(p.cost_items)
+      ? (p.cost_items as { name?: unknown; value?: unknown }[]).map((c) => ({ name: String(c.name ?? ""), value: Number(c.value) || 0 }))
+      : [],
     option_groups: Array.isArray(p.option_groups) ? (p.option_groups as Product["option_groups"]) : [],
   };
 }
