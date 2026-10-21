@@ -23,9 +23,10 @@ export async function updateSession(request: NextRequest) {
     },
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // getClaims confere a assinatura do token sem ir ao servidor de login quando possível
+  // (e renova a sessão quando ela expira). A permissão de verdade é checada nas páginas.
+  const { data } = await supabase.auth.getClaims();
+  const user = data?.claims?.sub ? data.claims : null;
 
   const path = request.nextUrl.pathname;
   const isPublic = PUBLIC.some((p) => path === p || path.startsWith(p + "/"));

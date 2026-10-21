@@ -2,6 +2,7 @@ import "server-only";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 
 export async function createClient() {
   const cookieStore = await cookies();
@@ -25,26 +26,27 @@ export async function createClient() {
   );
 }
 
-/** Exige usuário logado com acesso liberado. Use em toda página/ação interna. */
-export async function requireStaff() {
+/**
+ * Exige usuário logado com acesso liberado. Use em toda página/ação interna.
+ * `cache` faz o layout e a página dividirem a mesma verificação na mesma requisição.
+ */
+export const requireStaff = cache(async () => {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: ok } = await supabase.rpc("is_admin");
+  // permissão e nome em paralelo (antes eram uma depois da outra)
+  const [{ data: ok }, { data: profile }] = await Promise.all([
+    supabase.rpc("is_admin"),
+    supabase.from("profiles").select("full_name, email").eq("id", user.id).maybeSingle(),
+  ]);
   if (!ok) redirect("/login?erro=acesso");
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("full_name, email")
-    .eq("id", user.id)
-    .maybeSingle();
 
   return {
     supabase,
     user,
     name: (profile?.full_name as string | null) || user.email?.split("@")[0] || "Equipe",
   };
-}
+});
