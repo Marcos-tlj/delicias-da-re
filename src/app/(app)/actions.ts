@@ -3,7 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient, requireStaff } from "@/lib/supabase/server";
-import type { Category, OptionGroup, OrderStatus, PaymentMethod, SelectedOptions, Unit } from "@/lib/types";
+import type { Category, CostItem, ExpenseCategory, MarginMode, OptionGroup, OrderStatus, PaymentMethod, SelectedOptions, Unit } from "@/lib/types";
+import { EXPENSE_CATEGORIES } from "@/lib/types";
+import { calcPrice } from "@/lib/pricing";
 
 type Result = { ok?: boolean; error?: string; id?: string };
 
@@ -143,16 +145,39 @@ export type ProductPayload = {
   stock_min: number;
   sort_order: number;
   option_groups: OptionGroup[];
+  cost: number;
+  cost_items: CostItem[];
+  margin_pct: number;
+  margin_mode: MarginMode;
+  price_auto: boolean;
+  price_rounding: number;
 };
+
+const money2 = (v: unknown) => Math.max(0, Math.round(Number(v) * 100) / 100 || 0);
 
 export async function saveProduct(p: ProductPayload): Promise<Result> {
   const { supabase } = await requireStaff();
   const categories: Category[] = ["bolos", "doces", "tortas", "outros"];
+  const costItems = (p.cost_items ?? [])
+    .map((c) => ({ name: String(c.name ?? "").trim().slice(0, 60), value: money2(c.value) }))
+    .filter((c) => c.name || c.value)
+    .slice(0, 40);
+  const cost = costItems.length ? money2(costItems.reduce((a, c) => a + c.value, 0)) : money2(p.cost);
+  const marginMode: MarginMode = p.margin_mode === "margin" ? "margin" : "markup";
+  const marginPct = Math.min(marginMode === "margin" ? 95 : 1000, Math.max(0, Math.round(Number(p.margin_pct) * 100) / 100 || 0));
+  const rounding = [0, 0.1, 0.5, 1].includes(Number(p.price_rounding)) ? Number(p.price_rounding) : 0;
+  const priceAuto = !!p.price_auto && cost > 0;
   const row = {
     name: p.name.trim().slice(0, 80),
     category: categories.includes(p.category) ? p.category : "outros",
     description: p.description.trim() || null,
-    price: Math.max(0, Math.round(Number(p.price) * 100) / 100 || 0),
+    price: priceAuto ? calcPrice(cost, marginPct, marginMode, rounding) : money2(p.price),
+    cost,
+    cost_items: costItems,
+    margin_pct: marginPct,
+    margin_mode: marginMode,
+    price_auto: priceAuto,
+    price_rounding: rounding,
     unit: p.unit === "kg" ? "kg" : "un",
     price_is_from: !!p.price_is_from,
     is_active: !!p.is_active,
@@ -206,6 +231,91 @@ export async function deleteProduct(id: string): Promise<Result> {
   const { supabase } = await requireStaff();
   const { error } = await supabase.from("products").delete().eq("id", id);
   if (error) return { error: "Não foi possível excluir o produto." };
+  refreshAll();
+  return { ok: true };
+}
+
+// ======================= Vendas rápidas (balcão) =======================
+export type QuickSalePayload = {
+  date: string; // AAAA-MM-DD
+  payment_method: PaymentMethod;
+  discount: number;
+  customer_name: string;
+  items: { product_id: string; quantity: number }[];
+};
+
+export async function saveQuickSale(p: QuickSalePayload): Promise<Result> {
+  const { supabase } = await requireStaff();
+  const qtys = new Map<string, number>();
+  for (const i of p.items ?? []) {
+    const q = Math.round(Number(i.quantity) * 100) / 100;
+    if (i.product_id && q > 0) qtys.set(i.product_id, (qtys.get(i.product_id) ?? 0) + q);
+  }
+  if (!qtys.size) return { error: "Adicione pelo menos um produto." };
+  const { data: products, error: pe } = await supabase
+    .from("products")
+    .select("id, name, unit, price")
+    .in("id", [...qtys.keys()]);
+  if (pe || !products?.length) return { error: "Produtos não encontrados." };
+
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(p.date) && p.date <= today ? p.date : today;
+  const dueAt = date === today ? new Date().toISOString() : new Date(`${date}T12:00:00-03:00`).toISOString();
+  const methods: PaymentMethod[] = ["pix", "cartao", "dinheiro", "outro"];
+
+  const order = {
+    walk_in: true,
+    customer_name: p.customer_name?.trim().slice(0, 120) || "Venda no balcão",
+    status: "entregue",
+    delivery_type: "retirada",
+    due_at: dueAt,
+    payment_method: methods.includes(p.payment_method) ? p.payment_method : "pix",
+    discount: money2(p.discount),
+    delivery_fee: 0,
+    amount_paid: 0,
+    notes: "",
+  };
+  const items = (products as { id: string; name: string; unit: string; price: unknown }[]).map((pr) => ({
+    product_id: pr.id,
+    product_name: pr.name,
+    unit: pr.unit,
+    unit_price: Number(pr.price),
+    quantity: qtys.get(pr.id),
+    options: {},
+    note: null,
+  }));
+  const { data, error } = await supabase.rpc("save_order", { p_order: order, p_items: items });
+  if (error) return { error: dbError(error, "Não foi possível registrar a venda.") };
+  refreshAll();
+  return { ok: true, id: data as string };
+}
+
+// ======================= Despesas =======================
+export type ExpensePayload = { id?: string; spent_on: string; description: string; category: ExpenseCategory; amount: number };
+
+export async function saveExpense(p: ExpensePayload): Promise<Result> {
+  const { supabase } = await requireStaff();
+  const row = {
+    spent_on: /^\d{4}-\d{2}-\d{2}$/.test(p.spent_on) ? p.spent_on : new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" }),
+    description: p.description.trim().slice(0, 120),
+    category: EXPENSE_CATEGORIES.some((c) => c.id === p.category) ? p.category : "outros",
+    amount: money2(p.amount),
+  };
+  if (!row.description) return { error: "Descreva a despesa." };
+  if (!(row.amount > 0)) return { error: "Informe o valor." };
+  const q = p.id
+    ? supabase.from("expenses").update(row).eq("id", p.id).select("id").single()
+    : supabase.from("expenses").insert(row).select("id").single();
+  const { data, error } = await q;
+  if (error) return { error: "Não foi possível salvar a despesa." };
+  refreshAll();
+  return { ok: true, id: data.id as string };
+}
+
+export async function deleteExpense(id: string): Promise<Result> {
+  const { supabase } = await requireStaff();
+  const { error } = await supabase.from("expenses").delete().eq("id", id);
+  if (error) return { error: "Não foi possível excluir a despesa." };
   refreshAll();
   return { ok: true };
 }

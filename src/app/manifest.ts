@@ -6,8 +6,8 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: "Delícias da Rê",
     start_url: "/",
     display: "standalone",
-    background_color: "#f6f4f1",
-    theme_color: "#2a1c15",
+    background_color: "#f6f2f7",
+    theme_color: "#241a28",
     icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml" }],
   };
 }

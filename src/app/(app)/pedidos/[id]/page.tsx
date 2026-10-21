@@ -34,6 +34,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
   const late = isLate(o.due_at, o.status);
   const idx = FLOW.indexOf(o.status);
   const remaining = Math.max(0, Number(o.total) - Number(o.amount_paid));
+  const orderCost = items.reduce((a, i) => a + (Number(i.unit_cost) || 0) * Number(i.quantity), 0);
 
   const waText = `Olá, ${o.customer_name.split(" ")[0]}! Aqui é da Delícias da Rê, sobre o seu pedido #${o.code}`;
 
@@ -135,6 +136,15 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
                 <dt>Total</dt>
                 <dd>{brl(o.total)}</dd>
               </div>
+              {orderCost > 0 && (
+                <div className="flex justify-between border-t border-line pt-1.5 text-[13px] text-ink-3">
+                  <dt>Custo de produção · lucro</dt>
+                  <dd>
+                    {brl(orderCost)} ·{" "}
+                    <b className={Number(o.total) - orderCost >= 0 ? "text-emerald-700" : "text-red-600"}>{brl(Number(o.total) - orderCost)}</b>
+                  </dd>
+                </div>
+              )}
             </dl>
           </Card>
 
