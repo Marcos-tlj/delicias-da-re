@@ -31,7 +31,7 @@ export default function LoginForm() {
     params.get("erro") === "acesso"
       ? "Sua conta não tem acesso a este sistema."
       : params.get("erro") === "link"
-        ? "O link de confirmação expirou ou foi aberto em outro navegador. Entre com seu e-mail e senha; se pedir confirmação, faça o “Primeiro acesso” de novo."
+        ? "Se você tocou no link do e-mail, a confirmação já foi feita. Agora é só entrar com seu e-mail e senha."
         : "",
   );
 
@@ -55,6 +55,13 @@ export default function LoginForm() {
 
     if (res.error) {
       setError(friendly(res.error.message));
+      setLoading(false);
+      return;
+    }
+    // e-mail que já tem conta: o Supabase responde "ok" sem reenviar nada
+    if (mode === "criar" && !res.data.session && res.data.user && (res.data.user.identities ?? []).length === 0) {
+      setMode("entrar");
+      setNotice("Esse e-mail já tem conta. Entre com a sua senha.");
       setLoading(false);
       return;
     }
