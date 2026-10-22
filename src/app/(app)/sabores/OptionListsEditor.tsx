@@ -16,7 +16,7 @@ import {
 import { brl, numInput, parseNum } from "@/lib/format";
 import { Button, Card, ErrorNote, Input, cn } from "@/components/ui";
 
-export default function OptionListsEditor({ lists, usage }: { lists: OptionList[]; usage: Record<string, string[]> }) {
+export default function OptionListsEditor({ lists, usage, layered = [] }: { lists: OptionList[]; usage: Record<string, string[]>; layered?: string[] }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [newList, setNewList] = useState("");
@@ -38,7 +38,7 @@ export default function OptionListsEditor({ lists, usage }: { lists: OptionList[
       <ErrorNote>{error}</ErrorNote>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {lists.map((l) => (
-          <ListCard key={l.id} list={l} usedBy={usage[l.id] ?? []} run={run} pending={pending} />
+          <ListCard key={l.id} list={l} usedBy={usage[l.id] ?? []} inLayers={layered.includes(l.id)} run={run} pending={pending} />
         ))}
 
         <Card className="flex flex-col justify-center border-dashed p-4 lg:p-5">
@@ -65,11 +65,13 @@ export default function OptionListsEditor({ lists, usage }: { lists: OptionList[
 function ListCard({
   list,
   usedBy,
+  inLayers,
   run,
   pending,
 }: {
   list: OptionList;
   usedBy: string[];
+  inLayers: boolean;
   run: (fn: () => Promise<{ error?: string }>, after?: () => void) => void;
   pending: boolean;
 }) {
@@ -132,6 +134,7 @@ function ListCard({
         )}
       </div>
 
+      {(inLayers || savedPrice > 0) && (
       <form
         className="flex items-center gap-2 border-b border-line bg-bg/40 px-4 py-2"
         onSubmit={(e) => {
@@ -154,6 +157,7 @@ function ListCard({
           aria-label="Preço do kg"
         />
       </form>
+      )}
 
       <ul className="flex-1 divide-y divide-line">
         {items.length === 0 && <li className="px-4 py-3 text-[13px] text-ink-3">Nenhum item ainda.</li>}
