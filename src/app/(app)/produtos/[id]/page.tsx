@@ -11,7 +11,7 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const { supabase } = await requireStaff();
   const [{ data: lists }, { data: ings }] = await Promise.all([
-    supabase.from("option_lists").select("id, name, sort_order").order("sort_order").order("name"),
+    supabase.from("option_lists").select("id, name, sort_order, price_per_kg").order("sort_order").order("name"),
     supabase.from("ingredients").select("*").order("name"),
   ]);
   const ingredients = (ings ?? []).map(normalizeIngredient);

@@ -3,24 +3,22 @@
 import Link from "next/link";
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Calculator, Plus, Trash2, Wheat, X } from "lucide-react";
-import type { Category, Ingredient, IngredientUnit, MarginMode, OptionGroup, OptionList, Product, Unit } from "@/lib/types";
+import { Calculator, Layers, Package, Plus, Trash2, Wheat, X } from "lucide-react";
+import type { Category, Ingredient, IngredientKind, MarginMode, OptionGroup, OptionList, Product, Unit } from "@/lib/types";
 import { CATEGORIES } from "@/lib/types";
 import { brl, numInput, parseNum } from "@/lib/format";
 import { calcPrice, pctFmt, profitOf } from "@/lib/pricing";
-import { compatibleUnits, lineCost, productCost, recipeCost, unitInfo } from "@/lib/ingredients";
+import { linesCost, productCost, recipeCost } from "@/lib/ingredients";
+import { MAX_LAYERS, isLayers } from "@/lib/layers";
+import CostLines, { type CostRow, measureUnitFor, toLines } from "./CostLines";
 import IngredientForm from "@/components/IngredientForm";
 import Sheet from "@/components/Sheet";
 import { deleteProduct, saveProduct } from "../../actions";
 import { Button, Card, CardHeader, ErrorNote, Field, Input, Segmented, Select, Textarea, Toggle, cn } from "@/components/ui";
 
 const PRESETS = [30, 50, 80, 100, 150, 200];
-const NEW_INGREDIENT = "__novo__";
 
-type RecipeRow = { ingredient_id: string; qty: string; unit: IngredientUnit };
-
-/** Unidade sugerida para medir na receita: g para quem compra em kg, ml para quem compra em L. */
-const measureUnitFor = (ing?: Ingredient): IngredientUnit => (ing ? (unitInfo(ing.unit).base as IngredientUnit) : "g");
+const toRows = (lines: Product["recipe"] | undefined): CostRow[] => (lines ?? []).map((l) => ({ ingredient_id: l.ingredient_id, qty: numInput(l.qty), unit: l.unit }));
 
 export default function ProductForm({
   product,
@@ -58,34 +56,24 @@ export default function ProductForm({
   const [rounding, setRounding] = useState<number>(product?.price_rounding ?? 0.5);
   const [priceAuto, setPriceAuto] = useState<boolean>(product ? product.price_auto : true);
 
-  // ---- receita (ingredientes usados) ----
+  // ---- receita (ingredientes) e embalagens: itens cadastrados em Ingredientes ----
   const [added, setAdded] = useState<Ingredient[]>([]);
   const allIngs = useMemo(() => {
     const m = new Map(ingredients.map((i) => [i.id, i] as const));
     for (const a of added) m.set(a.id, a);
     return m;
   }, [ingredients, added]);
-  const sortedIngs = useMemo(() => [...allIngs.values()].sort((a, b) => a.name.localeCompare(b.name, "pt-BR")), [allIngs]);
-  const [recipe, setRecipe] = useState<RecipeRow[]>(
-    (product?.recipe ?? []).map((l) => ({ ingredient_id: l.ingredient_id, qty: numInput(l.qty), unit: l.unit })),
-  );
+  const [recipe, setRecipe] = useState<CostRow[]>(toRows(product?.recipe));
+  const [packaging, setPackaging] = useState<CostRow[]>(toRows(product?.packaging));
   const [recipeYield, setRecipeYield] = useState(product?.recipe_yield ? numInput(product.recipe_yield) : "1");
-  const [newForRow, setNewForRow] = useState<number | null>(null);
-  const updateRecipe = (i: number, patch: Partial<RecipeRow>) => setRecipe((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const pickIngredient = (i: number, id: string) => {
-    if (id === NEW_INGREDIENT) return setNewForRow(i);
-    updateRecipe(i, { ingredient_id: id, unit: measureUnitFor(allIngs.get(id)) });
-  };
+  const [newFor, setNewFor] = useState<{ section: "recipe" | "packaging"; row: number } | null>(null);
 
   const yieldNum = parseNum(recipeYield) > 0 ? parseNum(recipeYield) : 1;
-  const rc = recipeCost(
-    recipe.filter((r) => r.ingredient_id).map((r) => ({ ingredient_id: r.ingredient_id, qty: parseNum(r.qty), unit: r.unit })),
-    allIngs,
-    yieldNum,
-  );
+  const rc = recipeCost(toLines(recipe), allIngs, yieldNum);
+  const packNum = linesCost(toLines(packaging), allIngs);
   const extrasNum = costItems.reduce((a, c) => a + parseNum(c.value), 0);
-  const hasDetail = recipe.length > 0 || costItems.length > 0;
-  const costNum = hasDetail ? productCost(rc.perUnit, costItems.map((c) => ({ value: parseNum(c.value) }))) : parseNum(cost);
+  const hasDetail = recipe.length > 0 || packaging.length > 0 || costItems.length > 0;
+  const costNum = hasDetail ? productCost(rc.perUnit, packNum, costItems.map((c) => ({ value: parseNum(c.value) }))) : parseNum(cost);
   const unitWord = unit === "kg" ? "kg" : "unidade";
   const suggested = calcPrice(costNum, marginPct, marginMode, rounding);
   const finalPrice = priceAuto && costNum > 0 ? suggested : parseNum(price);
@@ -109,10 +97,9 @@ export default function ProductForm({
         price: finalPrice,
         cost: costNum,
         cost_items: costItems.map((c) => ({ name: c.name, value: parseNum(c.value) })),
-        recipe: recipe
-          .filter((r) => r.ingredient_id && parseNum(r.qty) > 0)
-          .map((r) => ({ ingredient_id: r.ingredient_id, qty: parseNum(r.qty), unit: r.unit })),
+        recipe: toLines(recipe),
         recipe_yield: yieldNum,
+        packaging: toLines(packaging),
         margin_pct: marginPct,
         margin_mode: marginMode,
         price_auto: priceAuto && costNum > 0,
@@ -195,55 +182,19 @@ export default function ProductForm({
                 <p className="text-[13px] text-ink-3">
                   Escolha os ingredientes cadastrados em{" "}
                   <Link href="/ingredientes" className="font-semibold text-brand">
-                    Ingredientes
+                    Ingredientes e embalagens
                   </Link>{" "}
-                  e diga quanto usou. O custo é calculado pelo preço que você pagou.
+                  e diga quanto usou na receita inteira. O custo é calculado pelo preço que você pagou.
                 </p>
               )}
-              {recipe.map((r, i) => {
-                const ing = allIngs.get(r.ingredient_id);
-                return (
-                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-bg/40 p-2 sm:flex-nowrap sm:border-0 sm:bg-transparent sm:p-0">
-                    <Select
-                      value={r.ingredient_id}
-                      onChange={(e) => pickIngredient(i, e.target.value)}
-                      className="w-full min-w-0 sm:w-auto sm:flex-1"
-                      aria-label="Ingrediente"
-                    >
-                      <option value="" disabled>
-                        Escolha o ingrediente…
-                      </option>
-                      {sortedIngs.map((x) => (
-                        <option key={x.id} value={x.id}>
-                          {x.name}
-                        </option>
-                      ))}
-                      <option value={NEW_INGREDIENT}>+ Cadastrar novo ingrediente</option>
-                    </Select>
-                    <div className="min-w-0 flex-1 sm:w-24 sm:flex-none">
-                      <Input inputMode="decimal" value={r.qty} onChange={(e) => updateRecipe(i, { qty: e.target.value })} placeholder="Qtd." aria-label="Quantidade usada" />
-                    </div>
-                    <Select value={r.unit} onChange={(e) => updateRecipe(i, { unit: e.target.value as IngredientUnit })} className="w-[76px] shrink-0" aria-label="Medida">
-                      {(ing ? compatibleUnits(ing.unit) : compatibleUnits(r.unit)).map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.label}
-                        </option>
-                      ))}
-                    </Select>
-                    <span className="num w-[76px] shrink-0 text-right text-[13px] font-semibold text-ink-2">{ing ? brl(lineCost(ing, parseNum(r.qty), r.unit)) : "—"}</span>
-                    <button type="button" onClick={() => setRecipe((rs) => rs.filter((_, j) => j !== i))} className="shrink-0 rounded-lg p-2 text-ink-3 hover:bg-red-50 hover:text-red-600" aria-label="Remover ingrediente">
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => setRecipe((rs) => [...rs, { ingredient_id: "", qty: "", unit: "g" }])}
-                className="text-[13px] font-semibold text-brand hover:text-brand-dark"
-              >
-                + Adicionar ingrediente
-              </button>
+              <CostLines
+                rows={recipe}
+                onChange={setRecipe}
+                items={allIngs}
+                prefer="ingrediente"
+                addLabel="Adicionar ingrediente"
+                onNewItem={(row) => setNewFor({ section: "recipe", row })}
+              />
 
               {recipe.length > 0 && (
                 <Field
@@ -261,13 +212,34 @@ export default function ProductForm({
               )}
             </div>
 
-            {/* ---------- Outros custos ---------- */}
+            {/* ---------- Embalagens por unidade ---------- */}
+            <div className="space-y-2.5 border-t border-line pt-4">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-ink-2">
+                  <Package className="h-3.5 w-3.5 text-brand" /> Embalagens e itens por {unitWord}
+                </span>
+                {packaging.length > 0 && <span className="num text-[13px] font-semibold text-ink-2">{brl(packNum)}</span>}
+              </div>
+              {packaging.length === 0 && (
+                <p className="text-[13px] text-ink-3">Caixinha, forminha, fita, vela… comprados em pacote. Ex.: 1 caixinha de um pacote com 50 por R$ 30 = R$ 0,60.</p>
+              )}
+              <CostLines
+                rows={packaging}
+                onChange={setPackaging}
+                items={allIngs}
+                prefer="embalagem"
+                addLabel="Adicionar embalagem"
+                onNewItem={(row) => setNewFor({ section: "packaging", row })}
+              />
+            </div>
+
+            {/* ---------- Outros custos digitados ---------- */}
             <div className="space-y-2.5 border-t border-line pt-4">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-[13px] font-semibold text-ink-2">Outros custos por {unitWord}</span>
                 {costItems.length > 0 && <span className="num text-[13px] font-semibold text-ink-2">{brl(extrasNum)}</span>}
               </div>
-              {costItems.length === 0 && <p className="text-[13px] text-ink-3">Embalagem, gás, mão de obra… o que não entra na receita.</p>}
+              {costItems.length === 0 && <p className="text-[13px] text-ink-3">Gás, energia, mão de obra… valores que você digita direto.</p>}
               {costItems.map((c, i) => (
                 <div key={i} className="grid grid-cols-[1fr_110px_auto] gap-2">
                   <Input value={c.name} onChange={(e) => updateCostItem(i, { name: e.target.value })} placeholder="Ex.: Caixa e fita" aria-label="Item de custo" />
@@ -281,7 +253,7 @@ export default function ProductForm({
                 type="button"
                 onClick={() =>
                   setCostItems((cs) =>
-                    cs.length === 0 && recipe.length === 0 && parseNum(cost) > 0 ? [{ name: "Custo base", value: cost }, { name: "", value: "" }] : [...cs, { name: "", value: "" }],
+                    cs.length === 0 && recipe.length === 0 && packaging.length === 0 && parseNum(cost) > 0 ? [{ name: "Custo base", value: cost }, { name: "", value: "" }] : [...cs, { name: "", value: "" }],
                   )
                 }
                 className="text-[13px] font-semibold text-brand hover:text-brand-dark"
@@ -295,9 +267,15 @@ export default function ProductForm({
               <div className="flex items-center justify-between gap-3 rounded-xl bg-bg px-3.5 py-3">
                 <div>
                   <p className="text-[13px] font-semibold text-ink-2">Custo para produzir 1 {unitWord}</p>
-                  {recipe.length > 0 && costItems.length > 0 && (
+                  {[recipe.length, packaging.length, costItems.length].filter(Boolean).length > 1 && (
                     <p className="num text-xs text-ink-3">
-                      Ingredientes {brl(rc.perUnit)} + outros {brl(extrasNum)}
+                      {[
+                        recipe.length > 0 && `Ingredientes ${brl(rc.perUnit)}`,
+                        packaging.length > 0 && `embalagens ${brl(packNum)}`,
+                        costItems.length > 0 && `outros ${brl(extrasNum)}`,
+                      ]
+                        .filter(Boolean)
+                        .join(" + ")}
                     </p>
                   )}
                 </div>
@@ -383,7 +361,7 @@ export default function ProductForm({
         <Card>
           <CardHeader
             title="Escolhas do produto"
-            subtitle="Ex.: Massa, Recheio, Cobertura — usando as listas de Sabores"
+            subtitle="Ex.: Massa, Recheio (em camadas), Cobertura — usando as listas de Sabores"
             action={
               <Button
                 type="button"
@@ -406,42 +384,124 @@ export default function ProductForm({
               </p>
             )}
             {groups.length === 0 && lists.length > 0 && <p className="text-[13px] text-ink-3">Sem escolhas: o produto é adicionado direto ao pedido.</p>}
-            {groups.map((g, i) => (
-              <div key={i} className="rounded-xl border border-line bg-bg/40 p-3">
-                <div className="grid gap-3 sm:grid-cols-[1fr_1.3fr_auto]">
-                  <Field label="Nome da escolha">
-                    <Input value={g.label} onChange={(e) => updateGroup(i, { label: e.target.value })} placeholder="Recheio" />
-                  </Field>
-                  <Field label="Opções vêm da lista">
-                    <Select value={g.list_id} onChange={(e) => updateGroup(i, { list_id: e.target.value })}>
-                      {lists.map((l) => (
-                        <option key={l.id} value={l.id}>
-                          {l.name}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                  <button
-                    type="button"
-                    onClick={() => setGroups((gs) => gs.filter((_, j) => j !== i))}
-                    className="self-end rounded-lg p-2.5 text-ink-3 hover:bg-red-50 hover:text-red-600"
-                    aria-label="Remover escolha"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
+            {groups.map((g, i) => {
+              const layered = isLayers(g);
+              const ids = g.list_ids ?? (g.list_id ? [g.list_id] : []);
+              const otherHasLayers = groups.slice(0, i).some(isLayers);
+              return (
+                <div key={i} className="rounded-xl border border-line bg-bg/40 p-3">
+                  <div className="mb-3 flex items-center gap-2">
+                    <Segmented
+                      value={layered ? "layers" : "choice"}
+                      onChange={(k) =>
+                        updateGroup(
+                          i,
+                          k === "layers"
+                            ? { kind: "layers", list_ids: g.list_id ? [g.list_id] : [], layers: g.layers ?? 2, multi: false }
+                            : { kind: "choice", list_id: ids[0] ?? lists[0]?.id ?? "" },
+                        )
+                      }
+                      options={[
+                        { value: "choice", label: "Escolha simples" },
+                        { value: "layers", label: <><Layers className="h-3.5 w-3.5" /> Camadas de recheio</> },
+                      ]}
+                      className="flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setGroups((gs) => gs.filter((_, j) => j !== i))}
+                      className="rounded-lg p-2.5 text-ink-3 hover:bg-red-50 hover:text-red-600"
+                      aria-label="Remover escolha"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  {layered && otherHasLayers && <p className="mb-2 text-[12.5px] text-amber-700">Só uma escolha por produto pode ser de camadas. Esta será ignorada ao salvar.</p>}
+
+                  {layered ? (
+                    <div className="space-y-3">
+                      <div className="grid gap-3 sm:grid-cols-[1fr_150px]">
+                        <Field label="Nome da escolha">
+                          <Input value={g.label} onChange={(e) => updateGroup(i, { label: e.target.value })} placeholder="Recheio" />
+                        </Field>
+                        <Field label="Camadas (padrão)" hint="Dá para mudar em cada pedido.">
+                          <Select value={String(g.layers ?? 2)} onChange={(e) => updateGroup(i, { layers: Number(e.target.value) })}>
+                            {Array.from({ length: MAX_LAYERS }, (_, n) => n + 1).map((n) => (
+                              <option key={n} value={n}>
+                                {n} {n === 1 ? "camada" : "camadas"}
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+                      </div>
+                      <div>
+                        <span className="mb-1.5 block text-[13px] font-semibold text-ink-2">Cada camada pode usar sabores de</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {lists.map((l) => {
+                            const on = ids.includes(l.id);
+                            return (
+                              <button
+                                type="button"
+                                key={l.id}
+                                onClick={() => {
+                                  const next = on ? ids.filter((x) => x !== l.id) : [...ids, l.id];
+                                  updateGroup(i, { list_ids: next, list_id: next[0] ?? "" });
+                                }}
+                                className={cn(
+                                  "rounded-lg border px-3 py-1.5 text-[13px] font-medium transition",
+                                  on ? "border-ink bg-ink text-white" : "border-line bg-surface text-ink hover:border-line-strong",
+                                )}
+                              >
+                                {l.name}
+                                {l.price_per_kg ? <span className={cn("num ml-1", on ? "text-white/70" : "text-ink-3")}>{brl(l.price_per_kg)}/kg</span> : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-1.5 text-xs text-ink-3">
+                          O preço do kg no pedido é a média das camadas, usando o preço de cada lista (defina em{" "}
+                          <Link href="/sabores" className="font-semibold text-brand">
+                            Sabores
+                          </Link>
+                          ). Ex.: 1 camada a R$ 65 + 1 a R$ 80 = R$ 72,50/kg.
+                        </p>
+                      </div>
+                      <label className="flex items-center gap-2 text-[13px]">
+                        <input type="checkbox" className="h-4 w-4 accent-ink" checked={g.required} onChange={(e) => updateGroup(i, { required: e.target.checked })} />
+                        Obrigatório escolher o sabor de todas as camadas
+                      </label>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-[1fr_1.3fr]">
+                        <Field label="Nome da escolha">
+                          <Input value={g.label} onChange={(e) => updateGroup(i, { label: e.target.value })} placeholder="Massa" />
+                        </Field>
+                        <Field label="Opções vêm da lista">
+                          <Select value={g.list_id} onChange={(e) => updateGroup(i, { list_id: e.target.value })}>
+                            {lists.map((l) => (
+                              <option key={l.id} value={l.id}>
+                                {l.name}
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-4 text-[13px]">
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" className="h-4 w-4 accent-ink" checked={g.required} onChange={(e) => updateGroup(i, { required: e.target.checked })} />
+                          Obrigatório
+                        </label>
+                        <label className="flex items-center gap-2">
+                          <input type="checkbox" className="h-4 w-4 accent-ink" checked={g.multi} onChange={(e) => updateGroup(i, { multi: e.target.checked })} />
+                          Pode escolher vários
+                        </label>
+                      </div>
+                    </>
+                  )}
                 </div>
-                <div className="mt-2 flex flex-wrap gap-4 text-[13px]">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" className="h-4 w-4 accent-ink" checked={g.required} onChange={(e) => updateGroup(i, { required: e.target.checked })} />
-                    Obrigatório
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" className="h-4 w-4 accent-ink" checked={g.multi} onChange={(e) => updateGroup(i, { multi: e.target.checked })} />
-                    Pode escolher vários
-                  </label>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Card>
       </div>
@@ -513,15 +573,17 @@ export default function ProductForm({
         </div>
       </div>
 
-      {newForRow !== null && (
-        <Sheet title="Novo ingrediente" onClose={() => setNewForRow(null)}>
+      {newFor && (
+        <Sheet title={newFor.section === "recipe" ? "Novo ingrediente" : "Nova embalagem"} onClose={() => setNewFor(null)}>
           <IngredientForm
+            initialKind={(newFor.section === "recipe" ? "ingrediente" : "embalagem") as IngredientKind}
             onDone={(saved) => {
               if (saved) {
                 setAdded((a) => [...a, saved]);
-                updateRecipe(newForRow, { ingredient_id: saved.id, unit: measureUnitFor(saved) });
+                const set = newFor.section === "recipe" ? setRecipe : setPackaging;
+                set((rs) => rs.map((r, j) => (j === newFor.row ? { ...r, ingredient_id: saved.id, unit: measureUnitFor(saved) } : r)));
               }
-              setNewForRow(null);
+              setNewFor(null);
             }}
           />
         </Sheet>

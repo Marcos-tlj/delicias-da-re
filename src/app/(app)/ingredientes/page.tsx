@@ -3,18 +3,18 @@ import { normalizeIngredient, normalizeRecipe } from "@/lib/queries";
 import { PageHeader } from "@/components/ui";
 import IngredientsList from "./IngredientsList";
 
-export const metadata = { title: "Ingredientes" };
+export const metadata = { title: "Ingredientes e embalagens" };
 
 export default async function IngredientsPage() {
   const { supabase } = await requireStaff();
   const [{ data: ings }, { data: products }] = await Promise.all([
     supabase.from("ingredients").select("*").order("name"),
-    supabase.from("products").select("id, name, recipe").order("name"),
+    supabase.from("products").select("id, name, recipe, packaging").order("name"),
   ]);
 
   const usage: Record<string, string[]> = {};
   for (const p of products ?? []) {
-    for (const l of normalizeRecipe(p.recipe)) {
+    for (const l of [...normalizeRecipe(p.recipe), ...normalizeRecipe(p.packaging)]) {
       const list = (usage[l.ingredient_id] ??= []);
       if (!list.includes(p.name as string)) list.push(p.name as string);
     }
@@ -23,8 +23,8 @@ export default async function IngredientsPage() {
   return (
     <>
       <PageHeader
-        title="Ingredientes"
-        subtitle="Cadastre o que comprou, quanto veio e quanto pagou. Depois é só dizer, na receita de cada produto, quanto usou."
+        title="Ingredientes e embalagens"
+        subtitle="Cadastre o que comprou, quanto veio e quanto pagou. Depois é só dizer, em cada produto, quanto usou."
       />
       <IngredientsList ingredients={(ings ?? []).map(normalizeIngredient)} usage={usage} />
     </>

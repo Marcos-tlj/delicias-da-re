@@ -3,10 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient, requireStaff } from "@/lib/supabase/server";
-import type { Category, CostItem, ExpenseCategory, IngredientUnit, MarginMode, OptionGroup, OrderStatus, PaymentMethod, RecipeLine, SelectedOptions, Unit } from "@/lib/types";
+import type { Category, CostItem, ExpenseCategory, IngredientKind, IngredientUnit, MarginMode, OptionGroup, OrderStatus, PaymentMethod, RecipeLine, SelectedOptions, Unit } from "@/lib/types";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import { calcPrice } from "@/lib/pricing";
-import { isUnit, productCost, recipeCost, unitInfo } from "@/lib/ingredients";
+import { isUnit, linesCost, productCost, recipeCost, unitInfo } from "@/lib/ingredients";
+import { MAX_LAYERS } from "@/lib/layers";
 import { normalizeIngredient, normalizeProduct } from "@/lib/queries";
 
 type Result = { ok?: boolean; error?: string; id?: string };
@@ -155,9 +156,29 @@ export type ProductPayload = {
   price_rounding: number;
   recipe: RecipeLine[];
   recipe_yield: number;
+  packaging: RecipeLine[];
 };
 
 const money2 = (v: unknown) => Math.max(0, Math.round(Number(v) * 100) / 100 || 0);
+const isId = (v: unknown): v is string => typeof v === "string" && /^[0-9a-f-]{36}$/i.test(v);
+
+function cleanGroups(groups: OptionGroup[] | undefined): OptionGroup[] {
+  const out: OptionGroup[] = [];
+  let hasLayers = false;
+  for (const g of groups ?? []) {
+    const label = String(g?.label ?? "").trim().slice(0, 40);
+    if (!label) continue;
+    if (g.kind === "layers" && !hasLayers) {
+      const ids = [...new Set((g.list_ids ?? []).filter(isId))].slice(0, 10);
+      if (!ids.length) continue;
+      hasLayers = true; // só um grupo de camadas por produto
+      out.push({ label, kind: "layers", list_id: ids[0], list_ids: ids, layers: Math.min(MAX_LAYERS, Math.max(1, Math.round(Number(g.layers) || 2))), required: !!g.required, multi: false });
+    } else if (g.kind !== "layers" && isId(g.list_id)) {
+      out.push({ label, list_id: g.list_id, required: !!g.required, multi: !!g.multi });
+    }
+  }
+  return out.slice(0, 12);
+}
 
 export async function saveProduct(p: ProductPayload): Promise<Result> {
   const { supabase } = await requireStaff();
@@ -168,10 +189,11 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
     .slice(0, 40);
   const recipe = cleanRecipe(p.recipe);
   const recipeYield = Math.round(Number(p.recipe_yield) * 1000) / 1000 > 0 ? Math.round(Number(p.recipe_yield) * 1000) / 1000 : 1;
+  const packaging = cleanRecipe(p.packaging);
   let cost = money2(p.cost);
-  if (recipe.length || costItems.length) {
-    const ings = recipe.length ? await loadIngredients(supabase, recipe.map((l) => l.ingredient_id)) : [];
-    cost = money2(productCost(recipeCost(recipe, ings, recipeYield).perUnit, costItems));
+  if (recipe.length || packaging.length || costItems.length) {
+    const ings = await loadIngredients(supabase, [...recipe, ...packaging].map((l) => l.ingredient_id));
+    cost = money2(productCost(recipeCost(recipe, ings, recipeYield).perUnit, linesCost(packaging, ings), costItems));
   }
   const marginMode: MarginMode = p.margin_mode === "margin" ? "margin" : "markup";
   const marginPct = Math.min(marginMode === "margin" ? 95 : 1000, Math.max(0, Math.round(Number(p.margin_pct) * 100) / 100 || 0));
@@ -186,6 +208,7 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
     cost_items: costItems,
     recipe,
     recipe_yield: recipeYield,
+    packaging,
     margin_pct: marginPct,
     margin_mode: marginMode,
     price_auto: priceAuto,
@@ -197,9 +220,7 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
     stock_qty: Math.max(0, Number(p.stock_qty) || 0),
     stock_min: Math.max(0, Number(p.stock_min) || 0),
     sort_order: Math.trunc(Number(p.sort_order) || 0),
-    option_groups: (p.option_groups ?? [])
-      .filter((g) => g.list_id && g.label.trim())
-      .map((g) => ({ label: g.label.trim().slice(0, 40), list_id: g.list_id, required: !!g.required, multi: !!g.multi })),
+    option_groups: cleanGroups(p.option_groups),
   };
   if (!row.name) return { error: "Informe o nome do produto." };
   const q = p.id
@@ -271,15 +292,25 @@ async function loadIngredients(supabase: Supa, ids: string[]) {
   return (data ?? []).map(normalizeIngredient);
 }
 
+/** Produtos que usam o item na receita ou nas embalagens. */
+async function productsUsing(supabase: Supa, ingredientId: string) {
+  const [a, b] = await Promise.all([
+    supabase.from("products").select("*").contains("recipe", usesIngredient(ingredientId)),
+    supabase.from("products").select("*").contains("packaging", usesIngredient(ingredientId)),
+  ]);
+  const map = new Map<string, ReturnType<typeof normalizeProduct>>();
+  for (const row of [...(a.data ?? []), ...(b.data ?? [])]) map.set(String(row.id), normalizeProduct(row));
+  return [...map.values()];
+}
+
 /** Recalcula custo (e preço, se automático) dos produtos que usam o ingrediente. Devolve quantos mudaram. */
 async function recalcProductsUsing(supabase: Supa, ingredientId: string) {
-  const { data } = await supabase.from("products").select("*").contains("recipe", usesIngredient(ingredientId));
-  const products = (data ?? []).map(normalizeProduct);
+  const products = await productsUsing(supabase, ingredientId);
   if (!products.length) return 0;
-  const ings = await loadIngredients(supabase, products.flatMap((p) => p.recipe.map((l) => l.ingredient_id)));
+  const ings = await loadIngredients(supabase, products.flatMap((p) => [...p.recipe, ...p.packaging].map((l) => l.ingredient_id)));
   let changed = 0;
   for (const p of products) {
-    const cost = money2(productCost(recipeCost(p.recipe, ings, p.recipe_yield).perUnit, p.cost_items));
+    const cost = money2(productCost(recipeCost(p.recipe, ings, p.recipe_yield).perUnit, linesCost(p.packaging, ings), p.cost_items));
     const price = p.price_auto && cost > 0 ? calcPrice(cost, p.margin_pct, p.margin_mode, p.price_rounding) : p.price;
     if (cost === p.cost && price === p.price) continue;
     const { error } = await supabase.from("products").update({ cost, price }).eq("id", p.id);
@@ -291,6 +322,7 @@ async function recalcProductsUsing(supabase: Supa, ingredientId: string) {
 export type IngredientPayload = {
   id?: string;
   name: string;
+  kind: IngredientKind;
   unit: IngredientUnit;
   package_qty: number;
   package_price: number;
@@ -301,6 +333,7 @@ export async function saveIngredient(p: IngredientPayload): Promise<Result & { u
   const { supabase } = await requireStaff();
   const row = {
     name: p.name.trim().slice(0, 80),
+    kind: (["ingrediente", "embalagem", "outro"] as const).includes(p.kind) ? p.kind : "ingrediente",
     unit: isUnit(p.unit) ? p.unit : "g",
     package_qty: Math.round(Number(p.package_qty) * 1000) / 1000 || 0,
     package_price: money2(p.package_price),
@@ -314,11 +347,7 @@ export async function saveIngredient(p: IngredientPayload): Promise<Result & { u
     // não deixa trocar peso por volume se o ingrediente já está em alguma receita
     const { data: old } = await supabase.from("ingredients").select("unit").eq("id", p.id).maybeSingle();
     if (old && unitInfo(String(old.unit)).base !== unitInfo(row.unit).base) {
-      const { count } = await supabase
-        .from("products")
-        .select("id", { count: "exact", head: true })
-        .contains("recipe", usesIngredient(p.id));
-      if (count) return { error: "Esse ingrediente já está em receitas. Mantenha o mesmo tipo de medida (peso, volume ou unidade)." };
+      if ((await productsUsing(supabase, p.id)).length) return { error: "Esse ingrediente já está em receitas. Mantenha o mesmo tipo de medida (peso, volume ou unidade)." };
     }
   }
 
@@ -334,9 +363,9 @@ export async function saveIngredient(p: IngredientPayload): Promise<Result & { u
 
 export async function deleteIngredient(id: string): Promise<Result> {
   const { supabase } = await requireStaff();
-  const { data: used } = await supabase.from("products").select("name").contains("recipe", usesIngredient(id)).limit(5);
-  if (used?.length) {
-    return { error: `Esse ingrediente está na receita de: ${used.map((u) => u.name).join(", ")}. Tire das receitas antes de excluir.` };
+  const used = await productsUsing(supabase, id);
+  if (used.length) {
+    return { error: `Esse item está em: ${used.slice(0, 5).map((u) => u.name).join(", ")}. Tire dos produtos antes de excluir.` };
   }
   const { error } = await supabase.from("ingredients").delete().eq("id", id);
   if (error) return { error: "Não foi possível excluir o ingrediente." };
@@ -458,10 +487,26 @@ export async function deleteOptionList(id: string): Promise<Result> {
   const { data: products } = await supabase.from("products").select("id, option_groups");
   for (const p of products ?? []) {
     const groups = (Array.isArray(p.option_groups) ? p.option_groups : []) as OptionGroup[];
-    if (groups.some((g) => g.list_id === id)) {
-      await supabase.from("products").update({ option_groups: groups.filter((g) => g.list_id !== id) }).eq("id", p.id);
+    if (groups.some((g) => g.list_id === id || g.list_ids?.includes(id))) {
+      const next = groups
+        .map((g) => {
+          if (g.kind !== "layers") return g;
+          const ids = (g.list_ids ?? [g.list_id]).filter((x) => x !== id);
+          return ids.length ? { ...g, list_ids: ids, list_id: ids[0] } : null;
+        })
+        .filter((g): g is OptionGroup => !!g && (g.kind === "layers" || g.list_id !== id));
+      await supabase.from("products").update({ option_groups: next }).eq("id", p.id);
     }
   }
+  refreshAll();
+  return { ok: true };
+}
+
+export async function setListPrice(id: string, price: number | null): Promise<Result> {
+  const { supabase } = await requireStaff();
+  const v = price === null || !(Number(price) > 0) ? null : money2(price);
+  const { error } = await supabase.from("option_lists").update({ price_per_kg: v }).eq("id", id);
+  if (error) return { error: "Não foi possível salvar o preço." };
   refreshAll();
   return { ok: true };
 }

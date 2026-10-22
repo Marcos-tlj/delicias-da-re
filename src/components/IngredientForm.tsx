@@ -3,11 +3,12 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Trash2 } from "lucide-react";
-import type { Ingredient, IngredientUnit } from "@/lib/types";
+import type { Ingredient, IngredientKind, IngredientUnit } from "@/lib/types";
+import { INGREDIENT_KINDS } from "@/lib/types";
 import { brl, numInput, parseNum } from "@/lib/format";
 import { UNITS, costPerBase, refPrice, unitInfo } from "@/lib/ingredients";
 import { deleteIngredient, saveIngredient } from "@/app/(app)/actions";
-import { Button, ErrorNote, Field, Input, Select } from "./ui";
+import { Button, ErrorNote, Field, Input, Segmented, Select } from "./ui";
 
 const fmtSmall = (v: number) =>
   v.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 2, maximumFractionDigits: v < 0.1 ? 4 : 2 });
@@ -20,19 +21,22 @@ export default function IngredientForm({
   ingredient,
   usedIn = [],
   initialName = "",
+  initialKind = "ingrediente",
   onDone,
 }: {
   ingredient?: Ingredient;
   usedIn?: string[];
   initialName?: string;
+  initialKind?: IngredientKind;
   onDone: (saved?: Ingredient, info?: { updated: number }) => void;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState("");
   const [name, setName] = useState(ingredient?.name ?? initialName);
+  const [kind, setKind] = useState<IngredientKind>(ingredient?.kind ?? initialKind);
   const [qty, setQty] = useState(ingredient ? numInput(ingredient.package_qty) : "");
-  const [unit, setUnit] = useState<IngredientUnit>(ingredient?.unit ?? "g");
+  const [unit, setUnit] = useState<IngredientUnit>(ingredient?.unit ?? (initialKind === "ingrediente" ? "g" : "un"));
   const [price, setPrice] = useState(ingredient ? numInput(ingredient.package_price) : "");
   const [notes, setNotes] = useState(ingredient?.notes ?? "");
 
@@ -47,10 +51,10 @@ export default function IngredientForm({
     e.stopPropagation(); // pode estar dentro do formulário do produto
     setError("");
     start(async () => {
-      const r = await saveIngredient({ id: ingredient?.id, name, unit, package_qty: draft.package_qty, package_price: draft.package_price, notes });
+      const r = await saveIngredient({ id: ingredient?.id, name, kind, unit, package_qty: draft.package_qty, package_price: draft.package_price, notes });
       if (r.error || !r.id) return setError(r.error ?? "Erro ao salvar.");
       onDone(
-        { id: r.id, name: name.trim(), unit, package_qty: draft.package_qty, package_price: draft.package_price, notes: notes.trim() || null, updated_at: new Date().toISOString() },
+        { id: r.id, name: name.trim(), kind, unit, package_qty: draft.package_qty, package_price: draft.package_price, notes: notes.trim() || null, updated_at: new Date().toISOString() },
         { updated: r.updated ?? 0 },
       );
       router.refresh();
@@ -69,12 +73,27 @@ export default function IngredientForm({
 
   return (
     <form onSubmit={submit} className="space-y-4 p-5">
-      <Field label="Ingrediente">
-        <Input autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex.: Leite condensado Moça" maxLength={80} />
+      <Segmented
+        value={kind}
+        onChange={(k) => {
+          setKind(k);
+          if (!ingredient && !qty) setUnit(k === "ingrediente" ? "g" : "un");
+        }}
+        options={INGREDIENT_KINDS.map((k) => ({ value: k.id, label: k.label }))}
+      />
+      <Field label="Nome">
+        <Input
+          autoFocus
+          required
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={kind === "embalagem" ? "Ex.: Caixa para doce 4 cavidades" : kind === "outro" ? "Ex.: Vela de aniversário" : "Ex.: Leite condensado Moça"}
+          maxLength={80}
+        />
       </Field>
       <div className="grid grid-cols-[1fr_96px] gap-3">
         <Field label="Quanto vem na embalagem">
-          <Input inputMode="decimal" required value={qty} onChange={(e) => setQty(e.target.value)} placeholder={base === "un" ? "Ex.: 12" : "Ex.: 395"} />
+          <Input inputMode="decimal" required value={qty} onChange={(e) => setQty(e.target.value)} placeholder={base === "un" ? "Ex.: 50" : "Ex.: 395"} />
         </Field>
         <Field label="Medida">
           <Select value={unit} onChange={(e) => setUnit(e.target.value as IngredientUnit)}>
@@ -118,10 +137,10 @@ export default function IngredientForm({
       <ErrorNote>{error}</ErrorNote>
       <div className="flex gap-2 pt-1">
         <Button variant="primary" size="lg" className="flex-1" disabled={pending}>
-          {pending ? "Salvando…" : ingredient ? "Salvar ingrediente" : "Adicionar ingrediente"}
+          {pending ? "Salvando…" : ingredient ? "Salvar" : `Adicionar ${INGREDIENT_KINDS.find((k) => k.id === kind)?.label.toLowerCase()}`}
         </Button>
         {ingredient && (
-          <Button type="button" variant="danger" size="lg" onClick={remove} disabled={pending} aria-label="Excluir ingrediente">
+          <Button type="button" variant="danger" size="lg" onClick={remove} disabled={pending} aria-label="Excluir item">
             <Trash2 className="h-4 w-4" />
           </Button>
         )}

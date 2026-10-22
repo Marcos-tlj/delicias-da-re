@@ -60,7 +60,12 @@ export function recipeCost(recipe: RecipeLine[], ingredients: Map<string, Ingred
   return { lines, total, perUnit: total / y };
 }
 
-/** Custo final por unidade: receita ÷ rendimento + outros custos (embalagem, gás…). */
-export function productCost(recipePerUnit: number, extras: { value: number }[]) {
-  return recipePerUnit + extras.reduce((a, c) => a + (Number(c.value) || 0), 0);
+/** Custo de itens usados por unidade vendida (embalagens etc.): soma direta, sem dividir pelo rendimento. */
+export function linesCost(lines: RecipeLine[], ingredients: Map<string, Ingredient> | Ingredient[]) {
+  return recipeCost(lines, ingredients, 1).total;
+}
+
+/** Custo final por unidade: receita ÷ rendimento + embalagens + outros custos digitados (gás, mão de obra…). */
+export function productCost(recipePerUnit: number, packagingCost: number, extras: { value: number }[]) {
+  return recipePerUnit + packagingCost + extras.reduce((a, c) => a + (Number(c.value) || 0), 0);
 }

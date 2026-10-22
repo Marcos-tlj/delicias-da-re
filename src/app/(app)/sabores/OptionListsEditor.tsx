@@ -10,8 +10,10 @@ import {
   deleteOptionItem,
   deleteOptionList,
   renameOptionList,
+  setListPrice,
   setOptionItemActive,
 } from "../actions";
+import { brl, numInput, parseNum } from "@/lib/format";
 import { Button, Card, ErrorNote, Input, cn } from "@/components/ui";
 
 export default function OptionListsEditor({ lists, usage }: { lists: OptionList[]; usage: Record<string, string[]> }) {
@@ -74,6 +76,13 @@ function ListCard({
   const [item, setItem] = useState("");
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(list.name);
+  const savedPrice = list.price_per_kg ? Number(list.price_per_kg) : 0;
+  const [price, setPrice] = useState(savedPrice ? numInput(savedPrice) : "");
+  const savePrice = () => {
+    const v = parseNum(price);
+    if (v === savedPrice) return;
+    run(() => setListPrice(list.id, v > 0 ? v : null));
+  };
   const items = [...(list.option_items ?? [])].sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
 
   return (
@@ -122,6 +131,29 @@ function ListCard({
           </>
         )}
       </div>
+
+      <form
+        className="flex items-center gap-2 border-b border-line bg-bg/40 px-4 py-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          savePrice();
+        }}
+      >
+        <label htmlFor={`price-${list.id}`} className="flex-1 text-[12.5px] text-ink-3">
+          Preço do kg do bolo com recheio desta lista
+          {savedPrice > 0 && <span className="num block font-semibold text-ink-2">{brl(savedPrice)}/kg · usado nas camadas de recheio</span>}
+        </label>
+        <input
+          id={`price-${list.id}`}
+          inputMode="decimal"
+          value={price}
+          onChange={(e) => setPrice(e.target.value)}
+          onBlur={savePrice}
+          placeholder="—"
+          className="num h-8 w-20 rounded-lg border border-line bg-surface px-2 text-right text-[13px] outline-none focus:border-ink-2"
+          aria-label="Preço do kg"
+        />
+      </form>
 
       <ul className="flex-1 divide-y divide-line">
         {items.length === 0 && <li className="px-4 py-3 text-[13px] text-ink-3">Nenhum item ainda.</li>}

@@ -2,6 +2,7 @@ import { requireStaff } from "@/lib/supabase/server";
 import { normalizeProduct } from "@/lib/queries";
 import type { OptionList } from "@/lib/types";
 import { PageHeader } from "@/components/ui";
+import { groupListIds } from "@/lib/layers";
 import OptionListsEditor from "./OptionListsEditor";
 
 export const metadata = { title: "Sabores e opções" };
@@ -15,7 +16,8 @@ export default async function FlavorsPage() {
 
   const usage: Record<string, string[]> = {};
   for (const p of (products ?? []).map(normalizeProduct)) {
-    for (const g of p.option_groups) (usage[g.list_id] ??= []).push(p.name);
+    for (const g of p.option_groups)
+      for (const id of groupListIds(g)) if (!(usage[id] ??= []).includes(p.name)) usage[id].push(p.name);
   }
 
   return (

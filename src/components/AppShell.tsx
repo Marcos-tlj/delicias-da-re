@@ -26,7 +26,7 @@ const NAV = [
   { href: "/vendas", label: "Vendas e lucro", short: "Vendas", icon: BarChart3 },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/produtos", label: "Produtos e estoque", short: "Produtos", icon: Cake },
-  { href: "/ingredientes", label: "Ingredientes", icon: Wheat },
+  { href: "/ingredientes", label: "Ingredientes e embalagens", short: "Ingredientes", icon: Wheat },
   { href: "/sabores", label: "Sabores e opções", short: "Sabores", icon: Layers },
   { href: "/configuracoes", label: "Configurações", icon: Settings },
 ];
