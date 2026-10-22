@@ -1,4 +1,4 @@
-import type { OptionGroup, OptionList, SelectedOptions } from "./types";
+import type { OptionGroup, OptionList, Product, SelectedOptions } from "./types";
 
 export const MAX_LAYERS = 8;
 
@@ -50,4 +50,50 @@ export function layeredPrice(groups: OptionGroup[], options: SelectedOptions, li
     return p !== null && p !== undefined && Number(p) > 0 ? Number(p) : basePrice;
   });
   return Math.round((prices.reduce((a, b) => a + b, 0) / prices.length) * 100) / 100;
+}
+
+/** Custo do sabor (por kg/un do produto) procurando o nome nas listas indicadas. null = sabor não encontrado. */
+function flavorCost(name: string, listIds: string[], lists: OptionList[]) {
+  for (const id of listIds) {
+    const it = lists.find((l) => l.id === id)?.option_items?.find((i) => i.name === name);
+    if (it) return Number(it.cost) || 0;
+  }
+  return null;
+}
+
+/**
+ * Custo das escolhas do item, por kg (ou unidade) do produto:
+ * - escolha simples / vários: soma o custo de cada sabor escolhido
+ * - camadas: média do custo dos sabores das camadas (como o preço)
+ */
+export function selectionCost(groups: OptionGroup[], options: SelectedOptions, lists: OptionList[]) {
+  let total = 0;
+  for (const g of groups) {
+    if (isLayers(g)) {
+      const costs = readLayers(g.label, options)
+        .map((n) => (n ? flavorCost(n, groupListIds(g), lists) : null))
+        .filter((c): c is number => c !== null);
+      if (costs.length) total += costs.reduce((a, b) => a + b, 0) / costs.length;
+    } else {
+      const v = options[g.label];
+      const names = Array.isArray(v) ? v : v ? [v] : [];
+      for (const n of names) total += flavorCost(n, [g.list_id], lists) ?? 0;
+    }
+  }
+  return total;
+}
+
+/**
+ * Custo de 1 kg (ou 1 unidade) deste item do pedido:
+ * custo do produto + custo dos sabores + custo fixo (caixa…) dividido pela quantidade.
+ * Ex.: bolo de 2 kg, R$ 12/kg de massa + R$ 9/kg de recheio + caixa R$ 6 → 21 + 3 = R$ 24/kg (R$ 48 no total).
+ */
+export function itemUnitCost(
+  product: Pick<Product, "cost" | "cost_fixed" | "option_groups">,
+  options: SelectedOptions,
+  lists: OptionList[],
+  quantity: number,
+) {
+  const q = Number(quantity) > 0 ? Number(quantity) : 1;
+  return (Number(product.cost) || 0) + selectionCost(product.option_groups, options, lists) + (Number(product.cost_fixed) || 0) / q;
 }

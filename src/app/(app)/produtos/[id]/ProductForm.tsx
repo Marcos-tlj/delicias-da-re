@@ -8,7 +8,7 @@ import type { Category, Ingredient, IngredientKind, MarginMode, OptionGroup, Opt
 import { CATEGORIES } from "@/lib/types";
 import { brl, numInput, parseNum } from "@/lib/format";
 import { calcPrice, pctFmt, profitOf } from "@/lib/pricing";
-import { linesCost, productCost, recipeCost } from "@/lib/ingredients";
+import { costParts, linesCost, recipeCost } from "@/lib/ingredients";
 import { MAX_LAYERS, isLayers } from "@/lib/layers";
 import CostLines, { type CostRow, measureUnitFor, toLines } from "./CostLines";
 import IngredientForm from "@/components/IngredientForm";
@@ -73,7 +73,11 @@ export default function ProductForm({
   const packNum = linesCost(toLines(packaging), allIngs);
   const extrasNum = costItems.reduce((a, c) => a + parseNum(c.value), 0);
   const hasDetail = recipe.length > 0 || packaging.length > 0 || costItems.length > 0;
-  const costNum = hasDetail ? productCost(rc.perUnit, packNum, costItems.map((c) => ({ value: parseNum(c.value) }))) : parseNum(cost);
+  const parts = costParts(unit, rc.perUnit, packNum, costItems.map((c) => ({ value: parseNum(c.value) })));
+  const costNum = hasDetail ? parts.cost : parseNum(cost);
+  /** produtos por kg: caixa, cartão… uma vez por bolo, não multiplica pelo peso */
+  const fixedNum = hasDetail ? parts.fixed : 0;
+  const isKg = unit === "kg";
   const unitWord = unit === "kg" ? "kg" : "unidade";
   const suggested = calcPrice(costNum, marginPct, marginMode, rounding);
   const finalPrice = priceAuto && costNum > 0 ? suggested : parseNum(price);
@@ -199,7 +203,7 @@ export default function ProductForm({
               {recipe.length > 0 && (
                 <Field
                   label="Essa receita rende"
-                  hint={yieldNum !== 1 ? `${brl(rc.total)} ÷ ${numInput(yieldNum)} = ${brl(rc.perUnit)} de ingredientes por ${unitWord}.` : `Ex.: uma receita de brigadeiro que rende 40 unidades → digite 40.`}
+                  hint={yieldNum !== 1 ? `${brl(rc.total)} ÷ ${numInput(yieldNum)} = ${brl(rc.perUnit)} de ingredientes por ${unitWord}.` : (isKg ? `Ex.: a massa rende um bolo de 2 kg → digite 2. O custo é dividido por kg e multiplicado pelo peso de cada pedido.` : `Ex.: uma receita de brigadeiro que rende 40 unidades → digite 40.`)}
                   className="pt-1"
                 >
                   <div className="flex items-center gap-2">
@@ -216,12 +220,16 @@ export default function ProductForm({
             <div className="space-y-2.5 border-t border-line pt-4">
               <div className="flex items-baseline justify-between gap-3">
                 <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-ink-2">
-                  <Package className="h-3.5 w-3.5 text-brand" /> Embalagens e itens por {unitWord}
+                  <Package className="h-3.5 w-3.5 text-brand" /> {isKg ? "Embalagens e itens por bolo" : `Embalagens e itens por ${unitWord}`}
                 </span>
                 {packaging.length > 0 && <span className="num text-[13px] font-semibold text-ink-2">{brl(packNum)}</span>}
               </div>
               {packaging.length === 0 && (
-                <p className="text-[13px] text-ink-3">Caixinha, forminha, fita, vela… comprados em pacote. Ex.: 1 caixinha de um pacote com 50 por R$ 30 = R$ 0,60.</p>
+                <p className="text-[13px] text-ink-3">
+                  {isKg
+                    ? "Caixa, cartão/base, fita, vela… usados 1 vez por bolo: não mudam com o peso (um bolo de 1 kg e um de 3 kg usam 1 caixa)."
+                    : "Caixinha, forminha, fita, vela… comprados em pacote. Ex.: 1 caixinha de um pacote com 50 por R$ 30 = R$ 0,60."}
+                </p>
               )}
               <CostLines
                 rows={packaging}
@@ -267,7 +275,8 @@ export default function ProductForm({
               <div className="flex items-center justify-between gap-3 rounded-xl bg-bg px-3.5 py-3">
                 <div>
                   <p className="text-[13px] font-semibold text-ink-2">Custo para produzir 1 {unitWord}</p>
-                  {[recipe.length, packaging.length, costItems.length].filter(Boolean).length > 1 && (
+                  {isKg && fixedNum > 0 && <p className="num text-xs text-ink-3">+ {brl(fixedNum)} de embalagens por bolo</p>}
+                  {!isKg && [recipe.length, packaging.length, costItems.length].filter(Boolean).length > 1 && (
                     <p className="num text-xs text-ink-3">
                       {[
                         recipe.length > 0 && `Ingredientes ${brl(rc.perUnit)}`,
@@ -282,9 +291,48 @@ export default function ProductForm({
                 <p className="num font-display text-xl font-bold">{brl(costNum)}</p>
               </div>
             ) : (
-              <Field label={`Ou digite o custo de 1 ${unitWord} direto (R$)`} hint="Se preferir não montar a receita.">
+              <Field label={`Ou digite o custo de 1 ${unitWord} direto (R$)`} hint={isKg ? "Custo de 1 kg de bolo, se preferir não montar a receita." : "Se preferir não montar a receita."}>
                 <Input inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0,00" />
               </Field>
+            )}
+
+            {isKg && (costNum > 0 || fixedNum > 0) && (
+              <div className="rounded-xl border border-line">
+                <p className="border-b border-line px-3.5 py-2 text-[13px] font-semibold text-ink-2">Quanto custa cada bolo, pelo peso</p>
+                <table className="num w-full text-[13px]">
+                  <thead>
+                    <tr className="text-left text-[11.5px] text-ink-3">
+                      <th className="px-3.5 py-1.5 font-semibold">Peso</th>
+                      <th className="px-2 py-1.5 text-right font-semibold">Custo</th>
+                      <th className="px-2 py-1.5 text-right font-semibold">Preço</th>
+                      <th className="px-3.5 py-1.5 text-right font-semibold">Lucro</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[1, 1.5, 2, 3].map((kg) => {
+                      const c = costNum * kg + fixedNum;
+                      const pr = finalPrice * kg;
+                      return (
+                        <tr key={kg} className="border-t border-line">
+                          <td className="px-3.5 py-1.5">{numInput(kg)} kg</td>
+                          <td className="px-2 py-1.5 text-right">{brl(c)}</td>
+                          <td className="px-2 py-1.5 text-right">{pr > 0 ? brl(pr) : "—"}</td>
+                          <td className={cn("px-3.5 py-1.5 text-right font-semibold", pr - c < 0 && "text-red-600")}>{pr > 0 ? brl(pr - c) : "—"}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                {groups.length > 0 && (
+                  <p className="border-t border-line px-3.5 py-2 text-xs text-ink-3">
+                    Sem contar os sabores. No pedido, o custo de cada sabor escolhido (massa, recheio, adicional) entra pelo peso. Cadastre a receita de cada sabor em{" "}
+                    <Link href="/sabores" className="font-semibold text-brand">
+                      Sabores
+                    </Link>
+                    .
+                  </p>
+                )}
+              </div>
             )}
 
             <Field label="Como calcular o lucro" hint={marginMode === "markup" ? `Soma a porcentagem ao custo: ${pctFmt(marginPct)} de ${brl(costNum)} = ${brl((costNum * marginPct) / 100)} de lucro.` : `O lucro vira ${pctFmt(marginPct)} do preço final. Ajuda a manter a margem mesmo dando desconto.`}>
@@ -525,6 +573,7 @@ export default function ProductForm({
               </div>
             ))}
           </div>
+          {isKg && fixedNum > 0 && <p className="num mt-3 text-[12.5px] text-white/75">+ {brl(fixedNum)} de embalagens em cada bolo.</p>}
           {costNum <= 0 && <p className="mt-3 text-[12.5px] text-white/75">Informe o custo para ver o lucro de cada venda.</p>}
           {costNum > 0 && !priceAuto && <p className="mt-3 text-[12.5px] text-white/75">Com esse preço, o lucro é de {pctFmt(result.markup)} sobre o custo.</p>}
         </div>

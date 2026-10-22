@@ -3,12 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient, requireStaff } from "@/lib/supabase/server";
-import type { Category, CostItem, ExpenseCategory, IngredientKind, IngredientUnit, MarginMode, OptionGroup, OrderStatus, PaymentMethod, RecipeLine, SelectedOptions, Unit } from "@/lib/types";
+import type { Category, CostItem, OptionList, ExpenseCategory, IngredientKind, IngredientUnit, MarginMode, OptionGroup, OrderStatus, PaymentMethod, RecipeLine, SelectedOptions, Unit } from "@/lib/types";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import { calcPrice } from "@/lib/pricing";
-import { isUnit, linesCost, productCost, recipeCost, unitInfo } from "@/lib/ingredients";
-import { MAX_LAYERS } from "@/lib/layers";
-import { normalizeIngredient, normalizeProduct } from "@/lib/queries";
+import { costParts, isUnit, linesCost, recipeCost, unitInfo } from "@/lib/ingredients";
+import { MAX_LAYERS, itemUnitCost } from "@/lib/layers";
+import { normalizeIngredient, normalizeProduct, normalizeRecipe } from "@/lib/queries";
 
 type Result = { ok?: boolean; error?: string; id?: string };
 
@@ -58,10 +58,42 @@ export type OrderPayload = {
   }[];
 };
 
+/**
+ * Custo de cada item do pedido, calculado aqui no servidor:
+ * custo do produto + custo dos sabores escolhidos + custo fixo (caixa…) ÷ quantidade.
+ * Ao editar, item que não mudou mantém o custo gravado (o lucro antigo não muda).
+ */
+async function withCosts(supabase: Supa, orderId: string | undefined, items: OrderPayload["items"]) {
+  const pids = [...new Set(items.map((i) => i.product_id).filter(isId))];
+  if (!pids.length) return items;
+  const [{ data: prods }, { data: lists }, old] = await Promise.all([
+    supabase.from("products").select("*").in("id", pids),
+    supabase.from("option_lists").select("id, name, sort_order, price_per_kg, option_items(id, list_id, name, is_active, sort_order, cost)"),
+    orderId
+      ? supabase.from("order_items").select("product_id, quantity, options, unit_cost").eq("order_id", orderId)
+      : Promise.resolve({ data: [] as { product_id: string | null; quantity: unknown; options: unknown; unit_cost: unknown }[] }),
+  ]);
+  const byId = new Map((prods ?? []).map((r) => [String(r.id), normalizeProduct(r)]));
+  // o banco reordena as chaves do JSON: compara em ordem alfabética
+  const canon = (o: unknown) =>
+    JSON.stringify(Object.entries((o ?? {}) as Record<string, unknown>).sort(([x], [y]) => x.localeCompare(y)));
+  const sameOpts = (a: unknown, b: unknown) => canon(a) === canon(b);
+  return items.map((i) => {
+    const prod = i.product_id ? byId.get(i.product_id) : undefined;
+    if (!prod) return i;
+    const kept = (old.data ?? []).find(
+      (o) => o.product_id === i.product_id && Number(o.quantity) === Number(i.quantity) && sameOpts(o.options, i.options) && Number(o.unit_cost) > 0,
+    );
+    const unit_cost = kept ? Number(kept.unit_cost) : itemUnitCost(prod, i.options as SelectedOptions, (lists ?? []) as OptionList[], i.quantity);
+    return { ...i, unit_cost: Math.round(unit_cost * 100) / 100 };
+  });
+}
+
 export async function saveOrder(p: OrderPayload): Promise<Result> {
   const { supabase } = await requireStaff();
   const { items, ...order } = p;
-  const { data, error } = await supabase.rpc("save_order", { p_order: order, p_items: items });
+  const priced = await withCosts(supabase, p.id, items ?? []);
+  const { data, error } = await supabase.rpc("save_order", { p_order: order, p_items: priced });
   if (error) return { error: dbError(error, "Não foi possível salvar o pedido.") };
   refreshAll();
   return { ok: true, id: data as string };
@@ -190,10 +222,14 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
   const recipe = cleanRecipe(p.recipe);
   const recipeYield = Math.round(Number(p.recipe_yield) * 1000) / 1000 > 0 ? Math.round(Number(p.recipe_yield) * 1000) / 1000 : 1;
   const packaging = cleanRecipe(p.packaging);
+  const unit = p.unit === "kg" ? "kg" : "un";
   let cost = money2(p.cost);
+  let costFixed = 0;
   if (recipe.length || packaging.length || costItems.length) {
     const ings = await loadIngredients(supabase, [...recipe, ...packaging].map((l) => l.ingredient_id));
-    cost = money2(productCost(recipeCost(recipe, ings, recipeYield).perUnit, linesCost(packaging, ings), costItems));
+    const parts = costParts(unit, recipeCost(recipe, ings, recipeYield).perUnit, linesCost(packaging, ings), costItems);
+    cost = money2(parts.cost);
+    costFixed = money2(parts.fixed);
   }
   const marginMode: MarginMode = p.margin_mode === "margin" ? "margin" : "markup";
   const marginPct = Math.min(marginMode === "margin" ? 95 : 1000, Math.max(0, Math.round(Number(p.margin_pct) * 100) / 100 || 0));
@@ -209,11 +245,12 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
     recipe,
     recipe_yield: recipeYield,
     packaging,
+    cost_fixed: costFixed,
     margin_pct: marginPct,
     margin_mode: marginMode,
     price_auto: priceAuto,
     price_rounding: rounding,
-    unit: p.unit === "kg" ? "kg" : "un",
+    unit,
     price_is_from: !!p.price_is_from,
     is_active: !!p.is_active,
     stock_enabled: !!p.stock_enabled,
@@ -303,17 +340,45 @@ async function productsUsing(supabase: Supa, ingredientId: string) {
   return [...map.values()];
 }
 
-/** Recalcula custo (e preço, se automático) dos produtos que usam o ingrediente. Devolve quantos mudaram. */
+/** Sabores (itens das listas) cuja receita usa o ingrediente. */
+async function flavorsUsing(supabase: Supa, ingredientId: string) {
+  const { data } = await supabase
+    .from("option_items")
+    .select("id, name, recipe, recipe_yield, cost")
+    .contains("recipe", usesIngredient(ingredientId));
+  return (data ?? []).map((r) => ({
+    id: String(r.id),
+    name: String(r.name),
+    recipe: normalizeRecipe(r.recipe),
+    recipe_yield: Number(r.recipe_yield) > 0 ? Number(r.recipe_yield) : 1,
+    cost: Number(r.cost) || 0,
+  }));
+}
+
+const cost4 = (v: number) => Math.max(0, Math.round(v * 10000) / 10000 || 0);
+
+/** Recalcula custo (e preço, se automático) dos produtos e o custo dos sabores que usam o ingrediente. Devolve quantos mudaram. */
 async function recalcProductsUsing(supabase: Supa, ingredientId: string) {
-  const products = await productsUsing(supabase, ingredientId);
-  if (!products.length) return 0;
-  const ings = await loadIngredients(supabase, products.flatMap((p) => [...p.recipe, ...p.packaging].map((l) => l.ingredient_id)));
+  const [products, flavors] = await Promise.all([productsUsing(supabase, ingredientId), flavorsUsing(supabase, ingredientId)]);
+  if (!products.length && !flavors.length) return 0;
+  const ings = await loadIngredients(supabase, [
+    ...products.flatMap((p) => [...p.recipe, ...p.packaging].map((l) => l.ingredient_id)),
+    ...flavors.flatMap((f) => f.recipe.map((l) => l.ingredient_id)),
+  ]);
   let changed = 0;
   for (const p of products) {
-    const cost = money2(productCost(recipeCost(p.recipe, ings, p.recipe_yield).perUnit, linesCost(p.packaging, ings), p.cost_items));
+    const parts = costParts(p.unit, recipeCost(p.recipe, ings, p.recipe_yield).perUnit, linesCost(p.packaging, ings), p.cost_items);
+    const cost = money2(parts.cost);
+    const costFixed = money2(parts.fixed);
     const price = p.price_auto && cost > 0 ? calcPrice(cost, p.margin_pct, p.margin_mode, p.price_rounding) : p.price;
-    if (cost === p.cost && price === p.price) continue;
-    const { error } = await supabase.from("products").update({ cost, price }).eq("id", p.id);
+    if (cost === p.cost && price === p.price && costFixed === p.cost_fixed) continue;
+    const { error } = await supabase.from("products").update({ cost, price, cost_fixed: costFixed }).eq("id", p.id);
+    if (!error) changed++;
+  }
+  for (const f of flavors) {
+    const cost = cost4(recipeCost(f.recipe, ings, f.recipe_yield).perUnit);
+    if (cost === f.cost) continue;
+    const { error } = await supabase.from("option_items").update({ cost }).eq("id", f.id);
     if (!error) changed++;
   }
   return changed;
@@ -347,7 +412,7 @@ export async function saveIngredient(p: IngredientPayload): Promise<Result & { u
     // não deixa trocar peso por volume se o ingrediente já está em alguma receita
     const { data: old } = await supabase.from("ingredients").select("unit").eq("id", p.id).maybeSingle();
     if (old && unitInfo(String(old.unit)).base !== unitInfo(row.unit).base) {
-      if ((await productsUsing(supabase, p.id)).length) return { error: "Esse ingrediente já está em receitas. Mantenha o mesmo tipo de medida (peso, volume ou unidade)." };
+      if ((await productsUsing(supabase, p.id)).length || (await flavorsUsing(supabase, p.id)).length) return { error: "Esse ingrediente já está em receitas. Mantenha o mesmo tipo de medida (peso, volume ou unidade)." };
     }
   }
 
@@ -363,7 +428,7 @@ export async function saveIngredient(p: IngredientPayload): Promise<Result & { u
 
 export async function deleteIngredient(id: string): Promise<Result> {
   const { supabase } = await requireStaff();
-  const used = await productsUsing(supabase, id);
+  const used = [...(await productsUsing(supabase, id)), ...(await flavorsUsing(supabase, id))];
   if (used.length) {
     return { error: `Esse item está em: ${used.slice(0, 5).map((u) => u.name).join(", ")}. Tire dos produtos antes de excluir.` };
   }
@@ -530,6 +595,20 @@ export async function addOptionItem(listId: string, name: string): Promise<Resul
   return { ok: true };
 }
 
+/** Receita do sabor: ingredientes + para quantos kg (ou unidades) do produto ela dá. */
+export async function saveFlavorRecipe(id: string, recipe: RecipeLine[], recipeYield: number): Promise<Result & { cost?: number }> {
+  const { supabase } = await requireStaff();
+  if (!isId(id)) return { error: "Sabor inválido." };
+  const lines = cleanRecipe(recipe);
+  const y = Math.round(Number(recipeYield) * 1000) / 1000 > 0 ? Math.round(Number(recipeYield) * 1000) / 1000 : 1;
+  const ings = await loadIngredients(supabase, lines.map((l) => l.ingredient_id));
+  const cost = cost4(recipeCost(lines, ings, y).perUnit);
+  const { error } = await supabase.from("option_items").update({ recipe: lines, recipe_yield: y, cost }).eq("id", id);
+  if (error) return { error: "Não foi possível salvar o custo do sabor." };
+  refreshAll();
+  return { ok: true, cost };
+}
+
 export async function setOptionItemActive(id: string, active: boolean): Promise<Result> {
   const { supabase } = await requireStaff();
   const { error } = await supabase.from("option_items").update({ is_active: active }).eq("id", id);
@@ -563,6 +642,21 @@ export async function removeAllowedEmail(email: string): Promise<Result> {
   const { error } = await supabase.from("allowed_emails").delete().eq("email", email);
   if (error) return { error: "Erro ao remover." };
   refreshAll();
+  return { ok: true };
+}
+
+export async function changePassword(password: string): Promise<Result> {
+  const { supabase } = await requireStaff();
+  if (typeof password !== "string" || password.length < 8) return { error: "A senha precisa ter pelo menos 8 caracteres." };
+  if (password.length > 72) return { error: "Senha longa demais (máximo 72 caracteres)." };
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) {
+    const m = error.message.toLowerCase();
+    if (m.includes("different from the old")) return { error: "A nova senha precisa ser diferente da atual." };
+    if (m.includes("weak") || m.includes("short")) return { error: "Senha fraca. Use pelo menos 8 caracteres, misturando letras e números." };
+    if (m.includes("reauthentication")) return { error: "Por segurança, saia e entre de novo antes de trocar a senha." };
+    return { error: "Não foi possível trocar a senha. Tente novamente." };
+  }
   return { ok: true };
 }
 

@@ -3,7 +3,8 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Eye, EyeOff, Pencil, Plus, Trash2, X } from "lucide-react";
-import type { OptionList } from "@/lib/types";
+import type { Ingredient, OptionItem, OptionList } from "@/lib/types";
+import FlavorCost, { flavorCostLabel } from "./FlavorCost";
 import {
   addOptionItem,
   createOptionList,
@@ -16,7 +17,18 @@ import {
 import { brl, numInput, parseNum } from "@/lib/format";
 import { Button, Card, ErrorNote, Input, cn } from "@/components/ui";
 
-export default function OptionListsEditor({ lists, usage, layered = [] }: { lists: OptionList[]; usage: Record<string, string[]>; layered?: string[] }) {
+export default function OptionListsEditor({
+  lists,
+  usage,
+  layered = [],
+  ingredients = [],
+}: {
+  lists: OptionList[];
+  usage: Record<string, string[]>;
+  layered?: string[];
+  ingredients?: Ingredient[];
+}) {
+  const [costing, setCosting] = useState<{ item: OptionItem; list: string } | null>(null);
   const router = useRouter();
   const [pending, start] = useTransition();
   const [newList, setNewList] = useState("");
@@ -38,7 +50,7 @@ export default function OptionListsEditor({ lists, usage, layered = [] }: { list
       <ErrorNote>{error}</ErrorNote>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {lists.map((l) => (
-          <ListCard key={l.id} list={l} usedBy={usage[l.id] ?? []} inLayers={layered.includes(l.id)} run={run} pending={pending} />
+          <ListCard key={l.id} list={l} usedBy={usage[l.id] ?? []} inLayers={layered.includes(l.id)} run={run} pending={pending} onCost={(item) => setCosting({ item, list: l.name })} />
         ))}
 
         <Card className="flex flex-col justify-center border-dashed p-4 lg:p-5">
@@ -58,6 +70,7 @@ export default function OptionListsEditor({ lists, usage, layered = [] }: { list
           </form>
         </Card>
       </div>
+      {costing && <FlavorCost item={costing.item} listName={costing.list} ingredients={ingredients} onClose={() => setCosting(null)} />}
     </div>
   );
 }
@@ -66,12 +79,14 @@ function ListCard({
   list,
   usedBy,
   inLayers,
+  onCost,
   run,
   pending,
 }: {
   list: OptionList;
   usedBy: string[];
   inLayers: boolean;
+  onCost: (item: OptionItem) => void;
   run: (fn: () => Promise<{ error?: string }>, after?: () => void) => void;
   pending: boolean;
 }) {
@@ -164,6 +179,16 @@ function ListCard({
         {items.map((i) => (
           <li key={i.id} className="group flex items-center gap-2 px-4 py-2">
             <span className={cn("flex-1 text-[13.5px]", !i.is_active && "text-ink-3 line-through")}>{i.name}</span>
+            <button
+              onClick={() => onCost(i)}
+              className={cn(
+                "num rounded-md px-1.5 py-0.5 text-[11.5px] font-semibold",
+                Number(i.cost) > 0 ? "bg-bg text-ink-2 hover:bg-line" : "text-ink-3 hover:bg-bg hover:text-ink",
+              )}
+              title="Custo do sabor por kg"
+            >
+              {Number(i.cost) > 0 ? `${flavorCostLabel(Number(i.cost))}/kg` : "+ custo"}
+            </button>
             <button
               onClick={() => run(() => setOptionItemActive(i.id, !i.is_active))}
               className="rounded-md p-1 text-ink-3 hover:bg-bg hover:text-ink"

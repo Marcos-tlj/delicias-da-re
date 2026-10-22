@@ -21,6 +21,7 @@ export function normalizeProduct(p: Record<string, unknown>): Product {
     recipe: normalizeRecipe(p.recipe),
     recipe_yield: Number(p.recipe_yield) > 0 ? Number(p.recipe_yield) : 1,
     packaging: normalizeRecipe(p.packaging),
+    cost_fixed: Number(p.cost_fixed ?? 0) || 0,
   };
 }
 

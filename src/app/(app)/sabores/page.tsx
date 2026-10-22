@@ -1,5 +1,5 @@
 import { requireStaff } from "@/lib/supabase/server";
-import { normalizeProduct } from "@/lib/queries";
+import { normalizeIngredient, normalizeProduct } from "@/lib/queries";
 import type { OptionList } from "@/lib/types";
 import { PageHeader } from "@/components/ui";
 import { groupListIds, isLayers } from "@/lib/layers";
@@ -9,9 +9,10 @@ export const metadata = { title: "Sabores e opções" };
 
 export default async function FlavorsPage() {
   const { supabase } = await requireStaff();
-  const [{ data: lists }, { data: products }] = await Promise.all([
+  const [{ data: lists }, { data: products }, { data: ings }] = await Promise.all([
     supabase.from("option_lists").select("*, option_items(*)").order("sort_order").order("name"),
     supabase.from("products").select("*"),
+    supabase.from("ingredients").select("*").order("name"),
   ]);
 
   const usage: Record<string, string[]> = {};
@@ -28,9 +29,9 @@ export default async function FlavorsPage() {
     <>
       <PageHeader
         title="Sabores e opções"
-        subtitle="Massas, recheios, coberturas e adicionais. Um item novo aparece na hora em todos os produtos que usam a lista."
+        subtitle="Massas, recheios, coberturas e adicionais. Um item novo aparece na hora em todos os produtos que usam a lista. Toque no valor ao lado de cada sabor para montar o custo dele por kg."
       />
-      <OptionListsEditor lists={(lists ?? []) as OptionList[]} usage={usage} layered={layered} />
+      <OptionListsEditor lists={(lists ?? []) as OptionList[]} usage={usage} layered={layered} ingredients={(ings ?? []).map(normalizeIngredient)} />
     </>
   );
 }

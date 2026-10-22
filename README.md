@@ -14,6 +14,8 @@ Sistema interno da confeitaria, só para a equipe (Marcos e a Rê). Funciona no 
 - **Despesas:** gás, embalagens, entregas e outros gastos que não estão no custo de cada produto entram nos gastos do relatório.
 - **Ingredientes e embalagens:** cadastro do que foi comprado (ingrediente, embalagem ou outro): nome, quanto vem no pacote (g, kg, ml, L ou un) e o preço pago. Ex.: 50 caixinhas por R$ 30 → R$ 0,60 cada. O sistema mostra quanto sai o kg, o litro ou a unidade. **Mudou o preço numa compra nova? Edite o ingrediente: o custo de todos os produtos que o usam é recalculado na hora (e o preço também, se o produto usa o preço sugerido).**
 - **Receita do produto:** em cada produto, escolha os ingredientes e quanto usou de cada um (pode ser em outra medida: comprou em kg e usa em g) e diga quanto a receita rende. Embalagens são informadas **por unidade vendida** (1 caixinha, 2 forminhas…). Custo de 1 unidade = ingredientes ÷ rendimento + embalagens + outros custos digitados (gás, mão de obra…).
+- **Custo do bolo pelo peso e pelos sabores:** em **Sabores**, cada sabor (massa, recheio, adicional) pode ter a própria receita e "para quantos kg de bolo ela dá"; o sistema calcula o custo do sabor por kg. Em cada pedido, o custo do item = (custo do produto por kg + custo dos sabores escolhidos por kg, com média nas camadas) × peso + embalagens do bolo (caixa, cartão… uma vez por bolo, não multiplicam pelo peso). O pedido mostra o custo e o lucro estimados antes de salvar, e o relatório usa esse custo.
+- **Senha:** "Esqueci minha senha" na tela de login envia um link por e-mail que abre a tela de nova senha (abra no mesmo aparelho e navegador). Logado, dá para trocar a senha em **Configurações**.
 - **Bolo sob encomenda com camadas de recheio:** o produto tem 2 camadas (padrão) e cada uma escolhe um sabor de qualquer lista ligada a ele (ex.: Recheios tradicionais e especiais). O preço do kg é a **média das camadas**: 1 tradicional (R$ 65) + 1 especial (R$ 80) = R$ 72,50/kg. O preço do kg de cada lista fica em **Sabores**. No pedido dá para mudar o número de camadas (bolo de andares, personalizado) e digitar outro preço.
 - **Custo e preço:** cada produto tem o custo de produção, que vem da receita ou pode ser digitado direto, e uma porcentagem de lucro. O sistema calcula o preço sugerido **sobre o custo** (custo + %) ou **sobre a venda** (o lucro vira % do preço), com arredondamento opcional. Dá para usar o preço sugerido ou definir outro e ver a margem real.
 - **Produtos e estoque:** preço por unidade ou por kg, "a partir de", ativar/pausar e estoque dos itens prontos, com botões + e −. **Criar um pedido dá baixa no estoque sozinho. Cancelar, editar ou excluir o pedido devolve os itens.**
@@ -42,12 +44,12 @@ npm run dev      # http://localhost:3000
 O arquivo `.env.local` precisa de `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY` (use a publishable key).
 
 ## Banco de dados
-- **Atualizar um banco que já está em uso:** rode no SQL Editor do Supabase as migrações que ainda não rodou, em ordem (`002_financeiro.sql`, `003_permissoes_funcoes.sql`, `004_ingredientes.sql`, `005_camadas_embalagens_seguranca.sql`). Elas não apagam nada e podem ser rodadas mais de uma vez.
+- **Atualizar um banco que já está em uso:** rode no SQL Editor do Supabase as migrações que ainda não rodou, em ordem (`002_financeiro.sql`, `003_permissoes_funcoes.sql`, `004_ingredientes.sql`, `005_camadas_embalagens_seguranca.sql`, `006_custo_sabores.sql`). Elas não apagam nada e podem ser rodadas mais de uma vez.
 - **Montar do zero:** `supabase/schema.sql`. **Atenção: ele apaga e recria as tabelas.**
 
 ### Como o lucro é calculado
 - **Rendimento bruto:** total dos pedidos não cancelados, contados pela data de entrega (ou pela data de criação, se não tiver data).
-- **Gastos:** custo de produção dos itens vendidos + despesas lançadas. O custo de cada item fica gravado no momento da venda. Pedidos feitos antes da atualização usam o custo atual do produto como estimativa.
+- **Gastos:** custo de produção dos itens vendidos + despesas lançadas. O custo de cada item é calculado no momento da venda (produto + sabores escolhidos × peso + embalagens do bolo) e fica gravado: mudar preços depois não altera vendas antigas. Ao editar um pedido, só os itens alterados recalculam o custo. Pedidos feitos antes da atualização usam o custo atual do produto como estimativa.
 - **Lucro final:** rendimento bruto − gastos.
 
 ## Estrutura

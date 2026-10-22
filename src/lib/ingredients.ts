@@ -69,3 +69,13 @@ export function linesCost(lines: RecipeLine[], ingredients: Map<string, Ingredie
 export function productCost(recipePerUnit: number, packagingCost: number, extras: { value: number }[]) {
   return recipePerUnit + packagingCost + extras.reduce((a, c) => a + (Number(c.value) || 0), 0);
 }
+
+/**
+ * Custo por kg/un e custo fixo por item vendido.
+ * - vendido por unidade: embalagem entra no custo de cada unidade
+ * - vendido por kg (bolos): embalagem (caixa, cartão…) é por bolo e não multiplica pelo peso
+ */
+export function costParts(unit: string, recipePerUnit: number, packagingCost: number, extras: { value: number }[]) {
+  const ex = extras.reduce((a, c) => a + (Number(c.value) || 0), 0);
+  return unit === "kg" ? { cost: recipePerUnit + ex, fixed: packagingCost } : { cost: recipePerUnit + packagingCost + ex, fixed: 0 };
+}

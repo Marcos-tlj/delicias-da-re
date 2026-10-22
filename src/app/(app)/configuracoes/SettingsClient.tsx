@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LogOut, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { addAllowedEmail, removeAllowedEmail, signOut, updateMyName } from "../actions";
 import { Button, Card, CardHeader, ErrorNote, Field, Input, Pill } from "@/components/ui";
+import PasswordForm from "@/components/PasswordForm";
 
 export default function SettingsClient({
   myEmail,
@@ -102,6 +103,13 @@ export default function SettingsClient({
               Salvar
             </Button>
           </form>
+        </Card>
+
+        <Card>
+          <CardHeader title="Trocar senha" subtitle="Esqueceu a senha? Na tela de login, use “Esqueci minha senha”." />
+          <div className="p-4 lg:p-5">
+            <PasswordForm />
+          </div>
         </Card>
 
         {(error || ok) && (error ? <ErrorNote>{error}</ErrorNote> : <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800">{ok}</p>)}
