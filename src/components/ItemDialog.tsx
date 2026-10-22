@@ -8,6 +8,12 @@ import { brl, numInput, parseNum, qty } from "@/lib/format";
 import { Button, ErrorNote, Field, Input, Segmented, Select, cn } from "./ui";
 import { MAX_LAYERS, groupListIds, isLayers, layerCount, layerKey, layeredPrice, readLayers } from "@/lib/layers";
 
+/** Preço com centavos: 72,5 → "72,50"; 65 → "65". */
+const money = (v: number) => {
+  const n = Number(v) || 0;
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(".", ",");
+};
+
 export type DraftItem = {
   key: string;
   product_id: string | null;
@@ -63,7 +69,7 @@ export default function ItemDialog({
     const opts: SelectedOptions = {};
     next.forEach((v, i) => (opts[layerKey(layerGroup.label, i)] = v));
     const lp = layeredPrice(product.option_groups, opts, lists, Number(product.price));
-    if (lp !== null) setPrice(numInput(lp));
+    if (lp !== null) setPrice(money(lp));
   };
 
   useEffect(() => {
@@ -88,7 +94,7 @@ export default function ItemDialog({
     setName(p?.name ?? "");
     setUnit(p?.unit ?? "un");
     setQuantity("1");
-    setPrice(p ? numInput(p.price) : "");
+    setPrice(p ? money(p.price) : "");
     setOptions({});
     setLayers(initialLayers(p, {}));
     setPriceTouched(false);
