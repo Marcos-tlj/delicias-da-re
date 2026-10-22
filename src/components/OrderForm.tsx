@@ -52,6 +52,7 @@ export default function OrderForm({
       quantity: Number(i.quantity),
       options: (i.options ?? {}) as SelectedOptions,
       note: i.note ?? "",
+      cost_total: Number(i.unit_cost) > 0 ? Math.round(Number(i.unit_cost) * Number(i.quantity) * 100) / 100 : null,
     })),
   );
   const [dialog, setDialog] = useState<{ open: boolean; editing: DraftItem | null }>({ open: false, editing: null });
@@ -120,6 +121,7 @@ export default function OrderForm({
           quantity: i.quantity,
           options: i.options,
           note: i.note.trim() || null,
+          cost_total: i.cost_total,
         })),
       });
       if (r.error || !r.id) {
@@ -242,6 +244,7 @@ export default function OrderForm({
                     {i.note && <p className="text-[13px] text-ink-3 italic">“{i.note}”</p>}
                     <p className="num mt-0.5 text-xs text-ink-3">
                       {brl(i.unit_price)} {i.unit === "kg" ? "/kg" : "/un"}
+                      {i.cost_total != null && ` · custo ${brl(i.cost_total)}`}
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
