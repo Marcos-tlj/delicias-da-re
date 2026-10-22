@@ -868,8 +868,34 @@ end $$;
 -- ---------------------------------------------------------------------
 -- 5. SEGURANÇA E DESEMPENHO (avisos do Security/Performance Advisor)
 -- ---------------------------------------------------------------------
--- 5a. Políticas: "(select …)" faz a checagem de acesso rodar 1 vez por consulta,
---     não 1 vez por linha (aviso "auth_rls_initplan"). Mesma regra de antes.
+-- 5a. Checagem de acesso fora da API (aviso "security definer function executable"):
+--     a função com privilégio fica no schema "private", que a API não expõe.
+--     public.is_admin() continua existindo (o app usa), mas sem privilégio extra.
+create schema if not exists private;
+revoke all on schema private from public, anon;
+grant usage on schema private to authenticated;
+
+create or replace function private.is_admin()
+returns boolean language sql stable security definer set search_path = '' as $$
+  select exists (
+    select 1
+    from public.profiles p
+    join public.allowed_emails a on a.email = lower(p.email)
+    where p.id = auth.uid() and p.is_admin
+  );
+$$;
+revoke all on function private.is_admin() from public, anon;
+grant execute on function private.is_admin() to authenticated;
+
+create or replace function public.is_admin()
+returns boolean language sql stable security invoker set search_path = '' as $$
+  select private.is_admin();
+$$;
+revoke all on function public.is_admin() from public, anon;
+grant execute on function public.is_admin() to authenticated;
+
+-- 5b. Políticas: "(select …)" faz a checagem rodar 1 vez por consulta, não 1 vez
+--     por linha (aviso "auth_rls_initplan"). Mesma regra de antes.
 do $$
 declare t text;
 begin
@@ -878,28 +904,28 @@ begin
   loop
     execute format('drop policy if exists "equipe: tudo" on public.%I', t);
     execute format('create policy "equipe: tudo" on public.%I for all to authenticated
-                      using ((select public.is_admin())) with check ((select public.is_admin()))', t);
+                      using ((select private.is_admin())) with check ((select private.is_admin()))', t);
   end loop;
 end $$;
 
 drop policy if exists "profiles: próprio ou equipe" on public.profiles;
 create policy "profiles: próprio ou equipe" on public.profiles for select to authenticated
-  using (id = (select auth.uid()) or (select public.is_admin()));
+  using (id = (select auth.uid()) or (select private.is_admin()));
 drop policy if exists "profiles: editar próprio" on public.profiles;
 create policy "profiles: editar próprio" on public.profiles for update to authenticated
   using (id = (select auth.uid())) with check (id = (select auth.uid()));
 
--- 5b. Índices nas chaves estrangeiras que não tinham (aviso "unindexed foreign keys")
+-- 5c. Índices nas chaves estrangeiras que não tinham (aviso "unindexed foreign keys")
 create index if not exists order_items_product_idx on public.order_items (product_id);
 create index if not exists orders_created_by_idx   on public.orders (created_by);
 create index if not exists expenses_created_by_idx on public.expenses (created_by);
 
--- 5c. Visitante anônimo não recebe acesso automático a tabelas/funções novas
+-- 5d. Visitante anônimo não recebe acesso automático a tabelas/funções novas
 --     (por padrão o Supabase concede; o RLS já bloqueava, isto é uma 2ª trava)
 revoke all on all tables in schema public from anon;
 alter default privileges in schema public revoke all on tables from anon;
 alter default privileges in schema public revoke all on sequences from anon;
 alter default privileges in schema public revoke execute on functions from anon, public;
 
--- 5d. Garante as permissões de quem está logado nas colunas/tabelas novas
+-- 5e. Garante as permissões de quem está logado nas colunas/tabelas novas
 grant select, insert, update, delete on public.ingredients to authenticated;
