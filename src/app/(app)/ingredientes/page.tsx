@@ -7,9 +7,10 @@ export const metadata = { title: "Ingredientes e embalagens" };
 
 export default async function IngredientsPage() {
   const { supabase } = await requireStaff();
-  const [{ data: ings }, { data: products }] = await Promise.all([
+  const [{ data: ings }, { data: products }, { data: flavors }] = await Promise.all([
     supabase.from("ingredients").select("*").order("name"),
     supabase.from("products").select("id, name, recipe, packaging").order("name"),
+    supabase.from("option_items").select("name, recipe"),
   ]);
 
   const usage: Record<string, string[]> = {};
@@ -17,6 +18,14 @@ export default async function IngredientsPage() {
     for (const l of [...normalizeRecipe(p.recipe), ...normalizeRecipe(p.packaging)]) {
       const list = (usage[l.ingredient_id] ??= []);
       if (!list.includes(p.name as string)) list.push(p.name as string);
+    }
+  }
+
+  for (const f of flavors ?? []) {
+    for (const l of normalizeRecipe(f.recipe)) {
+      const list = (usage[l.ingredient_id] ??= []);
+      const label = `sabor ${f.name}`;
+      if (!list.includes(label)) list.push(label);
     }
   }
 

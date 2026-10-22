@@ -6,7 +6,7 @@ import type { OptionList, Product, SelectedOptions, Unit } from "@/lib/types";
 import { CATEGORIES } from "@/lib/types";
 import { brl, numInput, parseNum, qty } from "@/lib/format";
 import { Button, ErrorNote, Field, Input, Segmented, Select, cn } from "./ui";
-import { MAX_LAYERS, groupListIds, isLayers, layerCount, layerKey, layeredPrice, readLayers } from "@/lib/layers";
+import { MAX_LAYERS, groupListIds, isLayers, itemUnitCost, layerCount, layerKey, layeredPrice, readLayers } from "@/lib/layers";
 
 /** Preço com centavos: 72,5 → "72,50"; 65 → "65". */
 const money = (v: number) => {
@@ -384,6 +384,26 @@ export default function ItemDialog({
                   />
                 </Field>
               </div>
+
+              {product && (() => {
+                const opts: SelectedOptions = { ...options };
+                if (layerGroup) layers.forEach((v, i) => (opts[layerKey(layerGroup.label, i)] = v));
+                const uc = itemUnitCost(product, opts, lists, q);
+                if (!(uc > 0) || !(q > 0)) return null;
+                const total = uc * q;
+                const revenue = Math.max(0, p) * q;
+                return (
+                  <p className="num -mt-2 text-[12.5px] text-ink-3">
+                    Custo estimado: <b className="text-ink-2">{brl(total)}</b>
+                    {revenue > 0 && (
+                      <>
+                        {" "}· lucro <b className={revenue - total < 0 ? "text-red-600" : "text-emerald-700"}>{brl(revenue - total)}</b>
+                      </>
+                    )}
+                    {Number(product.cost_fixed) > 0 && ` · inclui ${brl(product.cost_fixed)} de embalagem`}
+                  </p>
+                );
+              })()}
 
               <Field label="Observação do item">
                 <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Ex.: escrever “Parabéns, Ana!”" />

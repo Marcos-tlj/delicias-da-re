@@ -21,7 +21,7 @@ function friendly(msg: string) {
 export default function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const [mode, setMode] = useState<"entrar" | "criar">("entrar");
+  const [mode, setMode] = useState<"entrar" | "criar" | "recuperar">("entrar");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -31,7 +31,7 @@ export default function LoginForm() {
     params.get("erro") === "acesso"
       ? "Sua conta não tem acesso a este sistema."
       : params.get("erro") === "link"
-        ? "Se você tocou no link do e-mail, a confirmação já foi feita. Agora é só entrar com seu e-mail e senha."
+        ? "O link do e-mail não funcionou aqui (ele precisa ser aberto no mesmo aparelho e navegador e vale uma vez só). Se era a confirmação de conta, ela já foi feita: entre com seu e-mail e senha. Se era para trocar a senha, peça um link novo em “Esqueci minha senha”."
         : "",
   );
 
@@ -43,6 +43,18 @@ export default function LoginForm() {
     const supabase = createClient();
 
     if (params.get("erro") === "acesso") await supabase.auth.signOut();
+
+    if (mode === "recuperar") {
+      // o link do e-mail volta para /auth/callback, que entra e abre a tela de nova senha
+      const { error: e } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/auth/callback?next=/nova-senha`,
+      });
+      setLoading(false);
+      if (e && /rate limit|security purposes/i.test(e.message)) return setError(friendly(e.message));
+      // mesma mensagem com ou sem conta: não revela quais e-mails existem
+      setNotice(`Se ${email.trim()} tiver acesso, enviamos um link para criar uma nova senha. Abra o e-mail neste mesmo aparelho e navegador. Veja também o spam.`);
+      return;
+    }
 
     const res =
       mode === "entrar"
@@ -114,13 +126,16 @@ export default function LoginForm() {
             <p className="text-sm text-ink-3">Gestão de pedidos</p>
           </div>
 
-          <h1 className="text-xl font-bold">{mode === "entrar" ? "Entrar" : "Primeiro acesso"}</h1>
+          <h1 className="text-xl font-bold">{mode === "entrar" ? "Entrar" : mode === "criar" ? "Primeiro acesso" : "Esqueci minha senha"}</h1>
           <p className="mt-1 text-sm text-ink-3">
             {mode === "entrar"
               ? "Use o e-mail e a senha cadastrados."
-              : "Crie sua senha. Só funciona para e-mails liberados."}
+              : mode === "criar"
+                ? "Crie sua senha. Só funciona para e-mails liberados."
+                : "Digite seu e-mail. Enviamos um link para você criar uma senha nova."}
           </p>
 
+          {mode !== "recuperar" && (
           <Segmented
             className="mt-5"
             value={mode}
@@ -133,6 +148,7 @@ export default function LoginForm() {
               { value: "criar", label: "Primeiro acesso" },
             ]}
           />
+          )}
 
           <form onSubmit={submit} className="mt-5 space-y-4">
             {mode === "criar" && (
@@ -150,6 +166,7 @@ export default function LoginForm() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </Field>
+            {mode !== "recuperar" && (
             <Field label="Senha" hint={mode === "criar" ? "Mínimo de 8 caracteres." : undefined}>
               <Input
                 type="password"
@@ -160,6 +177,7 @@ export default function LoginForm() {
                 onChange={(e) => setPassword(e.target.value)}
               />
             </Field>
+            )}
             <ErrorNote>{error}</ErrorNote>
             {notice && (
               <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-sm text-emerald-800">
@@ -168,9 +186,20 @@ export default function LoginForm() {
             )}
             <Button variant="dark" size="lg" className="w-full" disabled={loading}>
               <Lock className="h-4 w-4" />
-              {loading ? "Aguarde…" : mode === "entrar" ? "Entrar" : "Criar acesso"}
+              {loading ? "Aguarde…" : mode === "entrar" ? "Entrar" : mode === "criar" ? "Criar acesso" : "Enviar link"}
             </Button>
           </form>
+          <button
+            type="button"
+            onClick={() => {
+              setMode(mode === "recuperar" ? "entrar" : "recuperar");
+              setError("");
+              setNotice("");
+            }}
+            className="mt-4 w-full text-center text-[13px] font-semibold text-ink-3 hover:text-ink"
+          >
+            {mode === "recuperar" ? "← Voltar para entrar" : "Esqueci minha senha"}
+          </button>
         </div>
       </div>
     </div>

@@ -20,7 +20,17 @@ export type OptionGroup = {
   list_ids?: string[];
   layers?: number;
 };
-export type OptionItem = { id: string; list_id: string; name: string; is_active: boolean; sort_order: number };
+export type OptionItem = {
+  id: string;
+  list_id: string;
+  name: string;
+  is_active: boolean;
+  sort_order: number;
+  /** custo do sabor por kg (ou unidade) do produto, calculado pela receita do sabor */
+  cost?: number;
+  recipe?: RecipeLine[];
+  recipe_yield?: number;
+};
 export type OptionList = { id: string; name: string; sort_order: number; price_per_kg?: number | null; option_items?: OptionItem[] };
 
 export type Product = {
@@ -46,6 +56,8 @@ export type Product = {
   recipe: RecipeLine[];
   recipe_yield: number;
   packaging: RecipeLine[];
+  /** custo fixo por item vendido (produtos por kg: caixa, cartão…), não multiplica pelo peso */
+  cost_fixed: number;
 };
 
 export type MarginMode = "markup" | "margin";
