@@ -49,7 +49,7 @@ export default function ItemDialog({
   const [name, setName] = useState(editing?.product_name ?? "");
   const [unit, setUnit] = useState<Unit>(editing?.unit ?? "un");
   const [quantity, setQuantity] = useState(editing ? numInput(editing.quantity) : "1");
-  const [price, setPrice] = useState(editing ? numInput(editing.unit_price) : "");
+  const [price, setPrice] = useState(editing ? money(editing.unit_price) : "");
   const [options, setOptions] = useState<SelectedOptions>(editing?.options ?? {});
   const [note, setNote] = useState(editing?.note ?? "");
   const [costInput, setCostInput] = useState(editing?.cost_total != null ? money(editing.cost_total) : "");
