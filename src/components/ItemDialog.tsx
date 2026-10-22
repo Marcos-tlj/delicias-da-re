@@ -23,6 +23,8 @@ export type DraftItem = {
   quantity: number;
   options: SelectedOptions;
   note: string;
+  /** quanto foi gasto no item inteiro (digitado no pedido); null = usa o cálculo do cadastro */
+  cost_total: number | null;
 };
 
 export default function ItemDialog({
@@ -50,6 +52,7 @@ export default function ItemDialog({
   const [price, setPrice] = useState(editing ? numInput(editing.unit_price) : "");
   const [options, setOptions] = useState<SelectedOptions>(editing?.options ?? {});
   const [note, setNote] = useState(editing?.note ?? "");
+  const [costInput, setCostInput] = useState(editing?.cost_total != null ? money(editing.cost_total) : "");
   const [error, setError] = useState("");
   const [priceTouched, setPriceTouched] = useState(false);
 
@@ -97,6 +100,7 @@ export default function ItemDialog({
     setPrice(p ? money(p.price) : "");
     setOptions({});
     setLayers(initialLayers(p, {}));
+    setCostInput("");
     setPriceTouched(false);
     setNote("");
     setError("");
@@ -147,6 +151,7 @@ export default function ItemDialog({
       quantity: q,
       options: clean,
       note,
+      cost_total: costInput.trim() === "" ? null : Math.max(0, Math.round(parseNum(costInput) * 100) / 100),
     });
   };
 
@@ -385,23 +390,41 @@ export default function ItemDialog({
                 </Field>
               </div>
 
-              {product && (() => {
-                const opts: SelectedOptions = { ...options };
-                if (layerGroup) layers.forEach((v, i) => (opts[layerKey(layerGroup.label, i)] = v));
-                const uc = itemUnitCost(product, opts, lists, q);
-                if (!(uc > 0) || !(q > 0)) return null;
-                const total = uc * q;
-                const revenue = Math.max(0, p) * q;
+              {(() => {
+                // custo sugerido pelo cadastro (produto + sabores + embalagem), só como referência
+                let suggested = 0;
+                if (product) {
+                  const opts: SelectedOptions = { ...options };
+                  if (layerGroup) layers.forEach((v, i) => (opts[layerKey(layerGroup.label, i)] = v));
+                  suggested = itemUnitCost(product, opts, lists, q) * (q > 0 ? q : 0);
+                }
+                const custom = costInput.trim() !== "";
+                const total = custom ? Math.max(0, parseNum(costInput)) : suggested;
+                const revenue = Math.max(0, p) * (q || 0);
                 return (
-                  <p className="num -mt-2 text-[12.5px] text-ink-3">
-                    Custo estimado: <b className="text-ink-2">{brl(total)}</b>
-                    {revenue > 0 && (
-                      <>
-                        {" "}· lucro <b className={revenue - total < 0 ? "text-red-600" : "text-emerald-700"}>{brl(revenue - total)}</b>
-                      </>
+                  <div className="rounded-2xl border border-line bg-bg/40 p-3">
+                    <Field
+                      label="Quanto você gastou neste item (R$)"
+                      hint={
+                        suggested > 0
+                          ? custom
+                            ? `Pelo cadastro seria ${brl(suggested)}.`
+                            : `Vazio = usa o cálculo do cadastro: ${brl(suggested)}.`
+                          : "Ingredientes, embalagem… do item inteiro (ex.: o bolo todo de 2 kg). Pode preencher depois, editando o pedido."
+                      }
+                    >
+                      <Input inputMode="decimal" value={costInput} onChange={(e) => setCostInput(e.target.value)} placeholder={suggested > 0 ? money(suggested) : "0,00"} />
+                    </Field>
+                    {total > 0 && revenue > 0 && (
+                      <p className="num mt-2 text-[12.5px] text-ink-3">
+                        Lucro deste item: <b className={revenue - total < 0 ? "text-red-600" : "text-emerald-700"}>{brl(revenue - total)}</b>
+                        {" "}({Math.round(((revenue - total) / revenue) * 100)}% do preço)
+                      </p>
                     )}
-                    {Number(product.cost_fixed) > 0 && ` · inclui ${brl(product.cost_fixed)} de embalagem`}
-                  </p>
+                    {editing && custom && q !== editing.quantity && (
+                      <p className="mt-1 text-[12.5px] text-amber-700">Você mudou a quantidade: confira se o custo continua certo.</p>
+                    )}
+                  </div>
                 );
               })()}
 

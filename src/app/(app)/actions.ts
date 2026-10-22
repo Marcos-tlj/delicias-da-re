@@ -55,6 +55,8 @@ export type OrderPayload = {
     quantity: number;
     options: SelectedOptions;
     note: string | null;
+    /** gasto no item inteiro, digitado no pedido (null/ausente = calcula pelo cadastro) */
+    cost_total?: number | null;
   }[];
 };
 
@@ -65,7 +67,11 @@ export type OrderPayload = {
  */
 async function withCosts(supabase: Supa, orderId: string | undefined, items: OrderPayload["items"]) {
   const pids = [...new Set(items.map((i) => i.product_id).filter(isId))];
-  if (!pids.length) return items;
+  if (!pids.length) {
+    return items.map((i) =>
+      i.cost_total != null && Number(i.cost_total) >= 0 ? { ...i, unit_cost: Math.round((Number(i.cost_total) / (Number(i.quantity) || 1)) * 10000) / 10000 } : i,
+    );
+  }
   const [{ data: prods }, { data: lists }, old] = await Promise.all([
     supabase.from("products").select("*").in("id", pids),
     supabase.from("option_lists").select("id, name, sort_order, price_per_kg, option_items(id, list_id, name, is_active, sort_order, cost)"),
@@ -79,6 +85,11 @@ async function withCosts(supabase: Supa, orderId: string | undefined, items: Ord
     JSON.stringify(Object.entries((o ?? {}) as Record<string, unknown>).sort(([x], [y]) => x.localeCompare(y)));
   const sameOpts = (a: unknown, b: unknown) => canon(a) === canon(b);
   return items.map((i) => {
+    // custo digitado no pedido vale mais que qualquer cálculo
+    const typed = Number(i.cost_total);
+    if (i.cost_total !== null && i.cost_total !== undefined && Number.isFinite(typed) && typed >= 0) {
+      return { ...i, unit_cost: Math.round((typed / (Number(i.quantity) || 1)) * 10000) / 10000 };
+    }
     const prod = i.product_id ? byId.get(i.product_id) : undefined;
     if (!prod) return i;
     const kept = (old.data ?? []).find(
