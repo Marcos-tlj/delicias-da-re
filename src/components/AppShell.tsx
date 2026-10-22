@@ -14,6 +14,7 @@ import {
   Plus,
   Settings,
   Users,
+  Wheat,
   X,
 } from "lucide-react";
 import { cn } from "./ui";
@@ -25,6 +26,7 @@ const NAV = [
   { href: "/vendas", label: "Vendas e lucro", short: "Vendas", icon: BarChart3 },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/produtos", label: "Produtos e estoque", short: "Produtos", icon: Cake },
+  { href: "/ingredientes", label: "Ingredientes e embalagens", short: "Ingredientes", icon: Wheat },
   { href: "/sabores", label: "Sabores e opções", short: "Sabores", icon: Layers },
   { href: "/configuracoes", label: "Configurações", icon: Settings },
 ];
@@ -140,7 +142,7 @@ export default function AppShell({ userName, children }: { userName: string; chi
             onClick={() => setMenuOpen(true)}
             className={cn(
               "flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[11px] font-semibold",
-              ["/clientes", "/produtos", "/sabores", "/configuracoes"].some((h) => isActive(path, h)) ? "text-brand" : "text-ink-3",
+              ["/clientes", "/produtos", "/ingredientes", "/sabores", "/configuracoes"].some((h) => isActive(path, h)) ? "text-brand" : "text-ink-3",
             )}
           >
             <Menu className="h-[22px] w-[22px]" strokeWidth={1.9} />

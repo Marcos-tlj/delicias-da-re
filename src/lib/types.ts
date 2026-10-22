@@ -5,9 +5,23 @@ export type DeliveryType = "retirada" | "entrega";
 export type PaymentMethod = "pix" | "cartao" | "dinheiro" | "outro";
 export type PaymentStatus = "pendente" | "parcial" | "pago";
 
-export type OptionGroup = { label: string; list_id: string; required: boolean; multi: boolean };
+/**
+ * Escolha do produto.
+ * - "choice" (padrão): escolher em uma lista (ex.: Massa)
+ * - "layers": camadas de recheio; cada camada escolhe em qualquer uma das listas de `list_ids`.
+ *   O preço do kg é a média do preço das listas escolhidas em cada camada.
+ */
+export type OptionGroup = {
+  label: string;
+  list_id: string;
+  required: boolean;
+  multi: boolean;
+  kind?: "choice" | "layers";
+  list_ids?: string[];
+  layers?: number;
+};
 export type OptionItem = { id: string; list_id: string; name: string; is_active: boolean; sort_order: number };
-export type OptionList = { id: string; name: string; sort_order: number; option_items?: OptionItem[] };
+export type OptionList = { id: string; name: string; sort_order: number; price_per_kg?: number | null; option_items?: OptionItem[] };
 
 export type Product = {
   id: string;
@@ -29,10 +43,32 @@ export type Product = {
   margin_mode: MarginMode;
   price_auto: boolean;
   price_rounding: number;
+  recipe: RecipeLine[];
+  recipe_yield: number;
+  packaging: RecipeLine[];
 };
 
 export type MarginMode = "markup" | "margin";
 export type CostItem = { name: string; value: number };
+
+export type IngredientUnit = "g" | "kg" | "ml" | "l" | "un";
+export type IngredientKind = "ingrediente" | "embalagem" | "outro";
+export const INGREDIENT_KINDS: { id: IngredientKind; label: string; plural: string }[] = [
+  { id: "ingrediente", label: "Ingrediente", plural: "Ingredientes" },
+  { id: "embalagem", label: "Embalagem", plural: "Embalagens" },
+  { id: "outro", label: "Outro", plural: "Outros" },
+];
+export type Ingredient = {
+  id: string;
+  name: string;
+  kind: IngredientKind;
+  unit: IngredientUnit;
+  package_qty: number;
+  package_price: number;
+  notes: string | null;
+  updated_at: string;
+};
+export type RecipeLine = { ingredient_id: string; qty: number; unit: IngredientUnit };
 
 export type ExpenseCategory = "ingredientes" | "embalagem" | "gas_energia" | "entrega" | "equipamentos" | "divulgacao" | "outros";
 export type Expense = {

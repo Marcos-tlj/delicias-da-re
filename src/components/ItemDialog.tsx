@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Minus, PackageCheck, Plus, Search, X } from "lucide-react";
+import { ArrowLeft, Layers, Minus, PackageCheck, Plus, Search, X } from "lucide-react";
 import type { OptionList, Product, SelectedOptions, Unit } from "@/lib/types";
 import { CATEGORIES } from "@/lib/types";
 import { brl, numInput, parseNum, qty } from "@/lib/format";
-import { Button, ErrorNote, Field, Input, Segmented, cn } from "./ui";
+import { Button, ErrorNote, Field, Input, Segmented, Select, cn } from "./ui";
+import { MAX_LAYERS, groupListIds, isLayers, layerCount, layerKey, layeredPrice, readLayers } from "@/lib/layers";
 
 export type DraftItem = {
   key: string;
@@ -44,6 +45,26 @@ export default function ItemDialog({
   const [options, setOptions] = useState<SelectedOptions>(editing?.options ?? {});
   const [note, setNote] = useState(editing?.note ?? "");
   const [error, setError] = useState("");
+  const [priceTouched, setPriceTouched] = useState(false);
+
+  // camadas de recheio (bolo sob encomenda): um sabor por camada
+  const layerGroup = product?.option_groups.find(isLayers) ?? null;
+  const initialLayers = (p: Product | null, opts: SelectedOptions) => {
+    const g = p?.option_groups.find(isLayers);
+    if (!g) return [];
+    const saved = readLayers(g.label, opts);
+    return saved.length ? saved : Array<string>(layerCount(g)).fill("");
+  };
+  const [layers, setLayers] = useState<string[]>(() => initialLayers(initialProduct, editing?.options ?? {}));
+
+  const changeLayers = (next: string[]) => {
+    setLayers(next);
+    if (!product || !layerGroup || priceTouched) return;
+    const opts: SelectedOptions = {};
+    next.forEach((v, i) => (opts[layerKey(layerGroup.label, i)] = v));
+    const lp = layeredPrice(product.option_groups, opts, lists, Number(product.price));
+    if (lp !== null) setPrice(numInput(lp));
+  };
 
   useEffect(() => {
     const prev = document.body.style.overflow;
@@ -69,6 +90,8 @@ export default function ItemDialog({
     setQuantity("1");
     setPrice(p ? numInput(p.price) : "");
     setOptions({});
+    setLayers(initialLayers(p, {}));
+    setPriceTouched(false);
     setNote("");
     setError("");
     setStep("config");
@@ -92,6 +115,10 @@ export default function ItemDialog({
     if (!name.trim()) return setError("Informe o nome do item.");
     if (!(q > 0)) return setError("Quantidade inválida.");
     for (const g of product?.option_groups ?? []) {
+      if (isLayers(g)) {
+        if (g.required && layers.some((l) => !l)) return setError(`Escolha o sabor de cada camada de ${g.label.toLowerCase()}.`);
+        continue;
+      }
       const v = options[g.label];
       if (g.required && (!v || (Array.isArray(v) && v.length === 0))) return setError(`Escolha: ${g.label}.`);
     }
@@ -101,8 +128,10 @@ export default function ItemDialog({
     // remove escolhas vazias
     const clean: SelectedOptions = {};
     for (const [k, v] of Object.entries(options)) {
+      if (layerGroup && k.startsWith(`${layerGroup.label} (camada `)) continue;
       if (Array.isArray(v) ? v.length : v) clean[k] = v;
     }
+    if (layerGroup) layers.forEach((v, i) => (clean[layerKey(layerGroup.label, i)] = v || "a definir"));
     onSave({
       key: editing?.key ?? "",
       product_id: product?.id ?? null,
@@ -204,7 +233,74 @@ export default function ItemDialog({
                 </div>
               )}
 
-              {product?.option_groups.map((g) => {
+              {(product?.option_groups ?? []).map((g) => {
+                if (isLayers(g)) {
+                  const groupLists = groupListIds(g)
+                    .map(listById)
+                    .filter((l): l is OptionList => !!l);
+                  const avg = layeredPrice(product?.option_groups ?? [], Object.fromEntries(layers.map((v, i) => [layerKey(g.label, i), v])), lists, Number(product?.price ?? 0));
+                  return (
+                    <fieldset key={g.label} className="rounded-2xl border border-line p-3">
+                      <legend className="px-1 text-[13px] font-semibold text-ink-2">
+                        <span className="inline-flex items-center gap-1.5">
+                          <Layers className="h-3.5 w-3.5 text-brand" /> {g.label} em camadas
+                        </span>
+                      </legend>
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <p className="text-[12.5px] text-ink-3">Iguais ou diferentes. Bolo de andares ou personalizado: mude o número de camadas.</p>
+                        <div className="flex shrink-0 items-center rounded-xl border border-line">
+                          <button
+                            type="button"
+                            className="flex h-9 w-9 items-center justify-center text-ink-2 hover:text-ink disabled:opacity-30"
+                            disabled={layers.length <= 1}
+                            onClick={() => changeLayers(layers.slice(0, -1))}
+                            aria-label="Menos camadas"
+                          >
+                            <Minus className="h-4 w-4" />
+                          </button>
+                          <span className="num w-8 text-center text-sm font-bold">{layers.length}</span>
+                          <button
+                            type="button"
+                            className="flex h-9 w-9 items-center justify-center text-ink-2 hover:text-ink disabled:opacity-30"
+                            disabled={layers.length >= MAX_LAYERS}
+                            onClick={() => changeLayers([...layers, layers[layers.length - 1] ?? ""])}
+                            aria-label="Mais camadas"
+                          >
+                            <Plus className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        {layers.map((v, i) => (
+                          <div key={i} className="grid grid-cols-[76px_1fr] items-center gap-2">
+                            <span className="text-[13px] font-medium text-ink-2">Camada {i + 1}</span>
+                            <Select value={v} onChange={(e) => changeLayers(layers.map((x, j) => (j === i ? e.target.value : x)))} aria-label={`Sabor da camada ${i + 1}`}>
+                              <option value="">Escolha o sabor…</option>
+                              {groupLists.map((l) => (
+                                <optgroup key={l.id} label={`${l.name}${l.price_per_kg ? ` · ${brl(l.price_per_kg)}/kg` : ""}`}>
+                                  {(l.option_items ?? [])
+                                    .filter((it) => it.is_active || it.name === v)
+                                    .sort((a, b) => a.sort_order - b.sort_order)
+                                    .map((it) => (
+                                      <option key={it.id} value={it.name}>
+                                        {it.name}
+                                      </option>
+                                    ))}
+                                </optgroup>
+                              ))}
+                            </Select>
+                          </div>
+                        ))}
+                      </div>
+                      {avg !== null && (
+                        <p className="num mt-2.5 text-[12.5px] text-ink-3">
+                          Preço do kg pela média das camadas: <b className="text-ink">{brl(avg)}</b>
+                          {priceTouched && " (você digitou outro preço abaixo)"}
+                        </p>
+                      )}
+                    </fieldset>
+                  );
+                }
                 const list = listById(g.list_id);
                 const choices = (list?.option_items ?? []).filter((i) => i.is_active).sort((a, b) => a.sort_order - b.sort_order);
                 return (
@@ -271,7 +367,15 @@ export default function ItemDialog({
                   </div>
                 </Field>
                 <Field label={`Preço ${unit === "kg" ? "por kg" : "unitário"} (R$)`}>
-                  <Input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0,00" />
+                  <Input
+                    inputMode="decimal"
+                    value={price}
+                    onChange={(e) => {
+                      setPrice(e.target.value);
+                      setPriceTouched(true);
+                    }}
+                    placeholder="0,00"
+                  />
                 </Field>
               </div>
 

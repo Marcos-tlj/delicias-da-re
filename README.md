@@ -12,7 +12,10 @@ Sistema interno da confeitaria, só para a equipe (Marcos e a Rê). Funciona no 
 - **Vendas e lucro:** relatório **semanal** (últimas 8 semanas) e **mensal** (últimos 6 meses) com gráfico de rendimento bruto, gastos e lucro final. Mostra também a margem real, o ticket médio, a comparação com o período anterior, para onde foi o dinheiro, os produtos que mais lucraram e a lista de vendas e despesas do período.
 - **Venda rápida:** registra uma venda no balcão em poucos toques. Ela já sai paga e entregue e dá baixa no estoque.
 - **Despesas:** gás, embalagens, entregas e outros gastos que não estão no custo de cada produto entram nos gastos do relatório.
-- **Custo e preço:** cada produto tem o custo de produção, que pode ser detalhado por item (ingredientes, embalagem…), e uma porcentagem de lucro. O sistema calcula o preço sugerido **sobre o custo** (custo + %) ou **sobre a venda** (o lucro vira % do preço), com arredondamento opcional. Dá para usar o preço sugerido ou definir outro e ver a margem real.
+- **Ingredientes e embalagens:** cadastro do que foi comprado (ingrediente, embalagem ou outro): nome, quanto vem no pacote (g, kg, ml, L ou un) e o preço pago. Ex.: 50 caixinhas por R$ 30 → R$ 0,60 cada. O sistema mostra quanto sai o kg, o litro ou a unidade. **Mudou o preço numa compra nova? Edite o ingrediente: o custo de todos os produtos que o usam é recalculado na hora (e o preço também, se o produto usa o preço sugerido).**
+- **Receita do produto:** em cada produto, escolha os ingredientes e quanto usou de cada um (pode ser em outra medida: comprou em kg e usa em g) e diga quanto a receita rende. Embalagens são informadas **por unidade vendida** (1 caixinha, 2 forminhas…). Custo de 1 unidade = ingredientes ÷ rendimento + embalagens + outros custos digitados (gás, mão de obra…).
+- **Bolo sob encomenda com camadas de recheio:** o produto tem 2 camadas (padrão) e cada uma escolhe um sabor de qualquer lista ligada a ele (ex.: Recheios tradicionais e especiais). O preço do kg é a **média das camadas**: 1 tradicional (R$ 65) + 1 especial (R$ 80) = R$ 72,50/kg. O preço do kg de cada lista fica em **Sabores**. No pedido dá para mudar o número de camadas (bolo de andares, personalizado) e digitar outro preço.
+- **Custo e preço:** cada produto tem o custo de produção, que vem da receita ou pode ser digitado direto, e uma porcentagem de lucro. O sistema calcula o preço sugerido **sobre o custo** (custo + %) ou **sobre a venda** (o lucro vira % do preço), com arredondamento opcional. Dá para usar o preço sugerido ou definir outro e ver a margem real.
 - **Produtos e estoque:** preço por unidade ou por kg, "a partir de", ativar/pausar e estoque dos itens prontos, com botões + e −. **Criar um pedido dá baixa no estoque sozinho. Cancelar, editar ou excluir o pedido devolve os itens.**
 - **Sabores e opções:** listas de massas, recheios, coberturas e adicionais. Um sabor adicionado aparece na hora em todos os produtos que usam aquela lista. Um sabor em falta pode ser escondido sem ser apagado.
 - **Configurações:** define quais e-mails podem entrar no sistema.
@@ -22,6 +25,7 @@ Sistema interno da confeitaria, só para a equipe (Marcos e a Rê). Funciona no 
 - **Só e-mails liberados** (tabela `allowed_emails`) conseguem criar conta: um trigger no banco recusa qualquer outro e-mail.
 - **RLS em todas as tabelas:** sem acesso liberado, nada é lido nem gravado, mesmo por quem tenha a chave pública.
 - Tirar um e-mail da lista corta o acesso na hora.
+- Visitantes anônimos não recebem permissão automática em tabelas ou funções novas (migração `005`). Toda função nova precisa de `grant execute … to authenticated` explícito.
 - Não há chave secreta no app. As variáveis ficam no `.env.local`, que não vai para o GitHub, e nas configurações da Vercel.
 
 ## Primeiro acesso
@@ -38,7 +42,7 @@ npm run dev      # http://localhost:3000
 O arquivo `.env.local` precisa de `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY` (use a publishable key).
 
 ## Banco de dados
-- **Atualizar um banco que já está em uso:** rode `supabase/migrations/002_financeiro.sql` no SQL Editor do Supabase. Ele não apaga nada e pode ser rodado mais de uma vez.
+- **Atualizar um banco que já está em uso:** rode no SQL Editor do Supabase as migrações que ainda não rodou, em ordem (`002_financeiro.sql`, `003_permissoes_funcoes.sql`, `004_ingredientes.sql`, `005_camadas_embalagens_seguranca.sql`). Elas não apagam nada e podem ser rodadas mais de uma vez.
 - **Montar do zero:** `supabase/schema.sql`. **Atenção: ele apaga e recria as tabelas.**
 
 ### Como o lucro é calculado
@@ -50,8 +54,8 @@ O arquivo `.env.local` precisa de `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPA
 ```
 src/
 ├─ middleware.ts                 # exige login em todas as páginas
-├─ lib/  supabase/ (client, server, middleware) · format.ts · types.ts · queries.ts · pricing.ts · report.ts
-├─ components/  AppShell (menu), OrderForm, ItemDialog, OrderCard, StockStepper, Charts, ui.tsx
+├─ lib/  supabase/ (client, server, middleware) · format.ts · types.ts · queries.ts · pricing.ts · ingredients.ts · layers.ts · report.ts
+├─ components/  AppShell (menu), OrderForm, ItemDialog, OrderCard, StockStepper, Charts, IngredientForm, Sheet, ui.tsx
 └─ app/
    ├─ login/                     # entrar / primeiro acesso
    └─ (app)/                     # área interna
@@ -59,7 +63,8 @@ src/
       ├─ pedidos/  novo/  [id]/  [id]/editar/
       ├─ vendas/  rapida/        # relatórios, despesas e venda rápida
       ├─ clientes/  [id]/
-      ├─ produtos/  [id]/
+      ├─ produtos/  [id]/          # inclui a receita (ingredientes usados)
+      ├─ ingredientes/            # ingredientes comprados e preço pago
       ├─ sabores/
       ├─ configuracoes/
       └─ actions.ts              # todas as gravações (server actions)
