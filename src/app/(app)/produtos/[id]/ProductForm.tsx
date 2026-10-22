@@ -1,19 +1,36 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Calculator, Plus, Trash2, X } from "lucide-react";
-import type { Category, MarginMode, OptionGroup, OptionList, Product, Unit } from "@/lib/types";
+import { Calculator, Plus, Trash2, Wheat, X } from "lucide-react";
+import type { Category, Ingredient, IngredientUnit, MarginMode, OptionGroup, OptionList, Product, Unit } from "@/lib/types";
 import { CATEGORIES } from "@/lib/types";
 import { brl, numInput, parseNum } from "@/lib/format";
 import { calcPrice, pctFmt, profitOf } from "@/lib/pricing";
+import { compatibleUnits, lineCost, productCost, recipeCost, unitInfo } from "@/lib/ingredients";
+import IngredientForm from "@/components/IngredientForm";
+import Sheet from "@/components/Sheet";
 import { deleteProduct, saveProduct } from "../../actions";
 import { Button, Card, CardHeader, ErrorNote, Field, Input, Segmented, Select, Textarea, Toggle, cn } from "@/components/ui";
 
 const PRESETS = [30, 50, 80, 100, 150, 200];
+const NEW_INGREDIENT = "__novo__";
 
-export default function ProductForm({ product, lists }: { product: Product | null; lists: OptionList[] }) {
+type RecipeRow = { ingredient_id: string; qty: string; unit: IngredientUnit };
+
+/** Unidade sugerida para medir na receita: g para quem compra em kg, ml para quem compra em L. */
+const measureUnitFor = (ing?: Ingredient): IngredientUnit => (ing ? (unitInfo(ing.unit).base as IngredientUnit) : "g");
+
+export default function ProductForm({
+  product,
+  lists,
+  ingredients,
+}: {
+  product: Product | null;
+  lists: OptionList[];
+  ingredients: Ingredient[];
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [error, setError] = useState("");
@@ -41,7 +58,35 @@ export default function ProductForm({ product, lists }: { product: Product | nul
   const [rounding, setRounding] = useState<number>(product?.price_rounding ?? 0.5);
   const [priceAuto, setPriceAuto] = useState<boolean>(product ? product.price_auto : true);
 
-  const costNum = costItems.length ? costItems.reduce((a, c) => a + parseNum(c.value), 0) : parseNum(cost);
+  // ---- receita (ingredientes usados) ----
+  const [added, setAdded] = useState<Ingredient[]>([]);
+  const allIngs = useMemo(() => {
+    const m = new Map(ingredients.map((i) => [i.id, i] as const));
+    for (const a of added) m.set(a.id, a);
+    return m;
+  }, [ingredients, added]);
+  const sortedIngs = useMemo(() => [...allIngs.values()].sort((a, b) => a.name.localeCompare(b.name, "pt-BR")), [allIngs]);
+  const [recipe, setRecipe] = useState<RecipeRow[]>(
+    (product?.recipe ?? []).map((l) => ({ ingredient_id: l.ingredient_id, qty: numInput(l.qty), unit: l.unit })),
+  );
+  const [recipeYield, setRecipeYield] = useState(product?.recipe_yield ? numInput(product.recipe_yield) : "1");
+  const [newForRow, setNewForRow] = useState<number | null>(null);
+  const updateRecipe = (i: number, patch: Partial<RecipeRow>) => setRecipe((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const pickIngredient = (i: number, id: string) => {
+    if (id === NEW_INGREDIENT) return setNewForRow(i);
+    updateRecipe(i, { ingredient_id: id, unit: measureUnitFor(allIngs.get(id)) });
+  };
+
+  const yieldNum = parseNum(recipeYield) > 0 ? parseNum(recipeYield) : 1;
+  const rc = recipeCost(
+    recipe.filter((r) => r.ingredient_id).map((r) => ({ ingredient_id: r.ingredient_id, qty: parseNum(r.qty), unit: r.unit })),
+    allIngs,
+    yieldNum,
+  );
+  const extrasNum = costItems.reduce((a, c) => a + parseNum(c.value), 0);
+  const hasDetail = recipe.length > 0 || costItems.length > 0;
+  const costNum = hasDetail ? productCost(rc.perUnit, costItems.map((c) => ({ value: parseNum(c.value) }))) : parseNum(cost);
+  const unitWord = unit === "kg" ? "kg" : "unidade";
   const suggested = calcPrice(costNum, marginPct, marginMode, rounding);
   const finalPrice = priceAuto && costNum > 0 ? suggested : parseNum(price);
   const result = profitOf(finalPrice, costNum);
@@ -64,6 +109,10 @@ export default function ProductForm({ product, lists }: { product: Product | nul
         price: finalPrice,
         cost: costNum,
         cost_items: costItems.map((c) => ({ name: c.name, value: parseNum(c.value) })),
+        recipe: recipe
+          .filter((r) => r.ingredient_id && parseNum(r.qty) > 0)
+          .map((r) => ({ ingredient_id: r.ingredient_id, qty: parseNum(r.qty), unit: r.unit })),
+        recipe_yield: yieldNum,
         margin_pct: marginPct,
         margin_mode: marginMode,
         price_auto: priceAuto && costNum > 0,
@@ -134,13 +183,94 @@ export default function ProductForm({ product, lists }: { product: Product | nul
         <Card>
           <CardHeader title={<span className="inline-flex items-center gap-2"><Calculator className="h-4 w-4 text-brand" /> Custo e preço</span>} subtitle="Informe quanto gasta para produzir e escolha a margem de lucro" />
           <div className="space-y-5 p-4 lg:p-5">
+            {/* ---------- Receita ---------- */}
             <div className="space-y-2.5">
-              <Field label={`Custo para produzir 1 ${unit === "kg" ? "kg" : "unidade"} (R$)`} hint={costItems.length ? "Soma dos itens abaixo." : "Ingredientes, embalagem, gás, sua mão de obra…"}>
-                <Input inputMode="decimal" value={costItems.length ? numInput(costNum) : cost} readOnly={costItems.length > 0} onChange={(e) => setCost(e.target.value)} placeholder="0,00" className={cn(costItems.length > 0 && "bg-bg")} />
-              </Field>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-ink-2">
+                  <Wheat className="h-3.5 w-3.5 text-brand" /> Ingredientes da receita
+                </span>
+                {recipe.length > 0 && <span className="num text-[13px] font-semibold text-ink-2">{brl(rc.total)}</span>}
+              </div>
+              {recipe.length === 0 && (
+                <p className="text-[13px] text-ink-3">
+                  Escolha os ingredientes cadastrados em{" "}
+                  <Link href="/ingredientes" className="font-semibold text-brand">
+                    Ingredientes
+                  </Link>{" "}
+                  e diga quanto usou. O custo é calculado pelo preço que você pagou.
+                </p>
+              )}
+              {recipe.map((r, i) => {
+                const ing = allIngs.get(r.ingredient_id);
+                return (
+                  <div key={i} className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-bg/40 p-2 sm:flex-nowrap sm:border-0 sm:bg-transparent sm:p-0">
+                    <Select
+                      value={r.ingredient_id}
+                      onChange={(e) => pickIngredient(i, e.target.value)}
+                      className="w-full min-w-0 sm:w-auto sm:flex-1"
+                      aria-label="Ingrediente"
+                    >
+                      <option value="" disabled>
+                        Escolha o ingrediente…
+                      </option>
+                      {sortedIngs.map((x) => (
+                        <option key={x.id} value={x.id}>
+                          {x.name}
+                        </option>
+                      ))}
+                      <option value={NEW_INGREDIENT}>+ Cadastrar novo ingrediente</option>
+                    </Select>
+                    <div className="min-w-0 flex-1 sm:w-24 sm:flex-none">
+                      <Input inputMode="decimal" value={r.qty} onChange={(e) => updateRecipe(i, { qty: e.target.value })} placeholder="Qtd." aria-label="Quantidade usada" />
+                    </div>
+                    <Select value={r.unit} onChange={(e) => updateRecipe(i, { unit: e.target.value as IngredientUnit })} className="w-[76px] shrink-0" aria-label="Medida">
+                      {(ing ? compatibleUnits(ing.unit) : compatibleUnits(r.unit)).map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.label}
+                        </option>
+                      ))}
+                    </Select>
+                    <span className="num w-[76px] shrink-0 text-right text-[13px] font-semibold text-ink-2">{ing ? brl(lineCost(ing, parseNum(r.qty), r.unit)) : "—"}</span>
+                    <button type="button" onClick={() => setRecipe((rs) => rs.filter((_, j) => j !== i))} className="shrink-0 rounded-lg p-2 text-ink-3 hover:bg-red-50 hover:text-red-600" aria-label="Remover ingrediente">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => setRecipe((rs) => [...rs, { ingredient_id: "", qty: "", unit: "g" }])}
+                className="text-[13px] font-semibold text-brand hover:text-brand-dark"
+              >
+                + Adicionar ingrediente
+              </button>
+
+              {recipe.length > 0 && (
+                <Field
+                  label="Essa receita rende"
+                  hint={yieldNum !== 1 ? `${brl(rc.total)} ÷ ${numInput(yieldNum)} = ${brl(rc.perUnit)} de ingredientes por ${unitWord}.` : `Ex.: uma receita de brigadeiro que rende 40 unidades → digite 40.`}
+                  className="pt-1"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="w-28">
+                      <Input inputMode="decimal" value={recipeYield} onChange={(e) => setRecipeYield(e.target.value)} aria-label="Rendimento" />
+                    </div>
+                    <span className="text-[13px] text-ink-2">{unit === "kg" ? "kg" : yieldNum === 1 ? "unidade" : "unidades"}</span>
+                  </div>
+                </Field>
+              )}
+            </div>
+
+            {/* ---------- Outros custos ---------- */}
+            <div className="space-y-2.5 border-t border-line pt-4">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[13px] font-semibold text-ink-2">Outros custos por {unitWord}</span>
+                {costItems.length > 0 && <span className="num text-[13px] font-semibold text-ink-2">{brl(extrasNum)}</span>}
+              </div>
+              {costItems.length === 0 && <p className="text-[13px] text-ink-3">Embalagem, gás, mão de obra… o que não entra na receita.</p>}
               {costItems.map((c, i) => (
                 <div key={i} className="grid grid-cols-[1fr_110px_auto] gap-2">
-                  <Input value={c.name} onChange={(e) => updateCostItem(i, { name: e.target.value })} placeholder="Ex.: Leite condensado" aria-label="Item de custo" />
+                  <Input value={c.name} onChange={(e) => updateCostItem(i, { name: e.target.value })} placeholder="Ex.: Caixa e fita" aria-label="Item de custo" />
                   <Input inputMode="decimal" value={c.value} onChange={(e) => updateCostItem(i, { value: e.target.value })} placeholder="0,00" aria-label="Valor do item" />
                   <button type="button" onClick={() => setCostItems((cs) => cs.filter((_, j) => j !== i))} className="rounded-lg px-2.5 text-ink-3 hover:bg-red-50 hover:text-red-600" aria-label="Remover item">
                     <X className="h-4 w-4" />
@@ -150,13 +280,34 @@ export default function ProductForm({ product, lists }: { product: Product | nul
               <button
                 type="button"
                 onClick={() =>
-                  setCostItems((cs) => (cs.length === 0 && parseNum(cost) > 0 ? [{ name: "Custo base", value: cost }, { name: "", value: "" }] : [...cs, { name: "", value: "" }]))
+                  setCostItems((cs) =>
+                    cs.length === 0 && recipe.length === 0 && parseNum(cost) > 0 ? [{ name: "Custo base", value: cost }, { name: "", value: "" }] : [...cs, { name: "", value: "" }],
+                  )
                 }
                 className="text-[13px] font-semibold text-brand hover:text-brand-dark"
               >
-                + {costItems.length ? "Adicionar item" : "Detalhar custo por item"}
+                + Adicionar custo
               </button>
             </div>
+
+            {/* ---------- Total ---------- */}
+            {hasDetail ? (
+              <div className="flex items-center justify-between gap-3 rounded-xl bg-bg px-3.5 py-3">
+                <div>
+                  <p className="text-[13px] font-semibold text-ink-2">Custo para produzir 1 {unitWord}</p>
+                  {recipe.length > 0 && costItems.length > 0 && (
+                    <p className="num text-xs text-ink-3">
+                      Ingredientes {brl(rc.perUnit)} + outros {brl(extrasNum)}
+                    </p>
+                  )}
+                </div>
+                <p className="num font-display text-xl font-bold">{brl(costNum)}</p>
+              </div>
+            ) : (
+              <Field label={`Ou digite o custo de 1 ${unitWord} direto (R$)`} hint="Se preferir não montar a receita.">
+                <Input inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0,00" />
+              </Field>
+            )}
 
             <Field label="Como calcular o lucro" hint={marginMode === "markup" ? `Soma a porcentagem ao custo: ${pctFmt(marginPct)} de ${brl(costNum)} = ${brl((costNum * marginPct) / 100)} de lucro.` : `O lucro vira ${pctFmt(marginPct)} do preço final. Ajuda a manter a margem mesmo dando desconto.`}>
               <Segmented
@@ -361,6 +512,20 @@ export default function ProductForm({ product, lists }: { product: Product | nul
           )}
         </div>
       </div>
+
+      {newForRow !== null && (
+        <Sheet title="Novo ingrediente" onClose={() => setNewForRow(null)}>
+          <IngredientForm
+            onDone={(saved) => {
+              if (saved) {
+                setAdded((a) => [...a, saved]);
+                updateRecipe(newForRow, { ingredient_id: saved.id, unit: measureUnitFor(saved) });
+              }
+              setNewForRow(null);
+            }}
+          />
+        </Sheet>
+      )}
     </form>
   );
 }

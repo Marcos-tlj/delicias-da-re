@@ -3,9 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient, requireStaff } from "@/lib/supabase/server";
-import type { Category, CostItem, ExpenseCategory, MarginMode, OptionGroup, OrderStatus, PaymentMethod, SelectedOptions, Unit } from "@/lib/types";
+import type { Category, CostItem, ExpenseCategory, IngredientUnit, MarginMode, OptionGroup, OrderStatus, PaymentMethod, RecipeLine, SelectedOptions, Unit } from "@/lib/types";
 import { EXPENSE_CATEGORIES } from "@/lib/types";
 import { calcPrice } from "@/lib/pricing";
+import { isUnit, productCost, recipeCost, unitInfo } from "@/lib/ingredients";
+import { normalizeIngredient, normalizeProduct } from "@/lib/queries";
 
 type Result = { ok?: boolean; error?: string; id?: string };
 
@@ -151,6 +153,8 @@ export type ProductPayload = {
   margin_mode: MarginMode;
   price_auto: boolean;
   price_rounding: number;
+  recipe: RecipeLine[];
+  recipe_yield: number;
 };
 
 const money2 = (v: unknown) => Math.max(0, Math.round(Number(v) * 100) / 100 || 0);
@@ -162,7 +166,13 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
     .map((c) => ({ name: String(c.name ?? "").trim().slice(0, 60), value: money2(c.value) }))
     .filter((c) => c.name || c.value)
     .slice(0, 40);
-  const cost = costItems.length ? money2(costItems.reduce((a, c) => a + c.value, 0)) : money2(p.cost);
+  const recipe = cleanRecipe(p.recipe);
+  const recipeYield = Math.round(Number(p.recipe_yield) * 1000) / 1000 > 0 ? Math.round(Number(p.recipe_yield) * 1000) / 1000 : 1;
+  let cost = money2(p.cost);
+  if (recipe.length || costItems.length) {
+    const ings = recipe.length ? await loadIngredients(supabase, recipe.map((l) => l.ingredient_id)) : [];
+    cost = money2(productCost(recipeCost(recipe, ings, recipeYield).perUnit, costItems));
+  }
   const marginMode: MarginMode = p.margin_mode === "margin" ? "margin" : "markup";
   const marginPct = Math.min(marginMode === "margin" ? 95 : 1000, Math.max(0, Math.round(Number(p.margin_pct) * 100) / 100 || 0));
   const rounding = [0, 0.1, 0.5, 1].includes(Number(p.price_rounding)) ? Number(p.price_rounding) : 0;
@@ -174,6 +184,8 @@ export async function saveProduct(p: ProductPayload): Promise<Result> {
     price: priceAuto ? calcPrice(cost, marginPct, marginMode, rounding) : money2(p.price),
     cost,
     cost_items: costItems,
+    recipe,
+    recipe_yield: recipeYield,
     margin_pct: marginPct,
     margin_mode: marginMode,
     price_auto: priceAuto,
@@ -231,6 +243,103 @@ export async function deleteProduct(id: string): Promise<Result> {
   const { supabase } = await requireStaff();
   const { error } = await supabase.from("products").delete().eq("id", id);
   if (error) return { error: "Não foi possível excluir o produto." };
+  refreshAll();
+  return { ok: true };
+}
+
+// ======================= Ingredientes e receitas =======================
+type Supa = Awaited<ReturnType<typeof requireStaff>>["supabase"];
+
+function cleanRecipe(r: RecipeLine[] | undefined): RecipeLine[] {
+  return (r ?? [])
+    .filter((l) => l && typeof l.ingredient_id === "string" && /^[0-9a-f-]{36}$/i.test(l.ingredient_id))
+    .map((l) => ({
+      ingredient_id: l.ingredient_id,
+      qty: Math.max(0, Math.round(Number(l.qty) * 1000) / 1000 || 0),
+      unit: (isUnit(l.unit) ? l.unit : "g") as IngredientUnit,
+    }))
+    .filter((l) => l.qty > 0)
+    .slice(0, 60);
+}
+
+/** Filtro jsonb "a receita contém este ingrediente". Precisa ir como texto JSON: array vira array do Postgres no supabase-js. */
+const usesIngredient = (id: string) => JSON.stringify([{ ingredient_id: id }]);
+
+async function loadIngredients(supabase: Supa, ids: string[]) {
+  if (!ids.length) return [];
+  const { data } = await supabase.from("ingredients").select("*").in("id", [...new Set(ids)]);
+  return (data ?? []).map(normalizeIngredient);
+}
+
+/** Recalcula custo (e preço, se automático) dos produtos que usam o ingrediente. Devolve quantos mudaram. */
+async function recalcProductsUsing(supabase: Supa, ingredientId: string) {
+  const { data } = await supabase.from("products").select("*").contains("recipe", usesIngredient(ingredientId));
+  const products = (data ?? []).map(normalizeProduct);
+  if (!products.length) return 0;
+  const ings = await loadIngredients(supabase, products.flatMap((p) => p.recipe.map((l) => l.ingredient_id)));
+  let changed = 0;
+  for (const p of products) {
+    const cost = money2(productCost(recipeCost(p.recipe, ings, p.recipe_yield).perUnit, p.cost_items));
+    const price = p.price_auto && cost > 0 ? calcPrice(cost, p.margin_pct, p.margin_mode, p.price_rounding) : p.price;
+    if (cost === p.cost && price === p.price) continue;
+    const { error } = await supabase.from("products").update({ cost, price }).eq("id", p.id);
+    if (!error) changed++;
+  }
+  return changed;
+}
+
+export type IngredientPayload = {
+  id?: string;
+  name: string;
+  unit: IngredientUnit;
+  package_qty: number;
+  package_price: number;
+  notes: string;
+};
+
+export async function saveIngredient(p: IngredientPayload): Promise<Result & { updated?: number }> {
+  const { supabase } = await requireStaff();
+  const row = {
+    name: p.name.trim().slice(0, 80),
+    unit: isUnit(p.unit) ? p.unit : "g",
+    package_qty: Math.round(Number(p.package_qty) * 1000) / 1000 || 0,
+    package_price: money2(p.package_price),
+    notes: p.notes?.trim().slice(0, 200) || null,
+  };
+  if (!row.name) return { error: "Informe o nome do ingrediente." };
+  if (!(row.package_qty > 0)) return { error: "Informe quanto vem na embalagem." };
+  if (!(row.package_price > 0)) return { error: "Informe o preço pago." };
+
+  if (p.id) {
+    // não deixa trocar peso por volume se o ingrediente já está em alguma receita
+    const { data: old } = await supabase.from("ingredients").select("unit").eq("id", p.id).maybeSingle();
+    if (old && unitInfo(String(old.unit)).base !== unitInfo(row.unit).base) {
+      const { count } = await supabase
+        .from("products")
+        .select("id", { count: "exact", head: true })
+        .contains("recipe", usesIngredient(p.id));
+      if (count) return { error: "Esse ingrediente já está em receitas. Mantenha o mesmo tipo de medida (peso, volume ou unidade)." };
+    }
+  }
+
+  const q = p.id
+    ? supabase.from("ingredients").update(row).eq("id", p.id).select("id").single()
+    : supabase.from("ingredients").insert(row).select("id").single();
+  const { data, error } = await q;
+  if (error) return { error: "Não foi possível salvar o ingrediente." };
+  const updated = p.id ? await recalcProductsUsing(supabase, p.id) : 0;
+  refreshAll();
+  return { ok: true, id: data.id as string, updated };
+}
+
+export async function deleteIngredient(id: string): Promise<Result> {
+  const { supabase } = await requireStaff();
+  const { data: used } = await supabase.from("products").select("name").contains("recipe", usesIngredient(id)).limit(5);
+  if (used?.length) {
+    return { error: `Esse ingrediente está na receita de: ${used.map((u) => u.name).join(", ")}. Tire das receitas antes de excluir.` };
+  }
+  const { error } = await supabase.from("ingredients").delete().eq("id", id);
+  if (error) return { error: "Não foi possível excluir o ingrediente." };
   refreshAll();
   return { ok: true };
 }

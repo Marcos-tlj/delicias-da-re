@@ -31,6 +31,7 @@ export default function RealtimeRefresher() {
         .on("postgres_changes", { event: "*", schema: "public", table: "products" }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "customers" }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "expenses" }, refresh)
+        .on("postgres_changes", { event: "*", schema: "public", table: "ingredients" }, refresh)
         .subscribe();
     })();
 

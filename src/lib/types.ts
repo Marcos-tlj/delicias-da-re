@@ -29,10 +29,24 @@ export type Product = {
   margin_mode: MarginMode;
   price_auto: boolean;
   price_rounding: number;
+  recipe: RecipeLine[];
+  recipe_yield: number;
 };
 
 export type MarginMode = "markup" | "margin";
 export type CostItem = { name: string; value: number };
+
+export type IngredientUnit = "g" | "kg" | "ml" | "l" | "un";
+export type Ingredient = {
+  id: string;
+  name: string;
+  unit: IngredientUnit;
+  package_qty: number;
+  package_price: number;
+  notes: string | null;
+  updated_at: string;
+};
+export type RecipeLine = { ingredient_id: string; qty: number; unit: IngredientUnit };
 
 export type ExpenseCategory = "ingredientes" | "embalagem" | "gas_energia" | "entrega" | "equipamentos" | "divulgacao" | "outros";
 export type Expense = {
